@@ -45,7 +45,7 @@ class LatLng:
 
 
 # --- CONFIGURATION ---
-# Hardcoded coordinate mappings updated to match LatLng structures
+# Hardcoded coordinate mappings matching LatLng structures
 LOCATIONS: Final[Mapping[str, LatLng]] = {
     "Citadel Mall": LatLng(latitude=32.7924, longitude=-80.0198),  # Charleston, SC
     "MUSC": LatLng(latitude=32.7848, longitude=-79.9472),          # Charleston, SC
@@ -58,11 +58,29 @@ class Route:
 
     origin: str
     destination: str
+    region: str  # Geographic market tagging field
 
 
 ROUTES: Final[Sequence[Route]] = (
-    Route(origin="Citadel Mall", destination="MUSC"),
-    Route(origin="MUSC", destination="Citadel Mall"),
+    Route(origin="Citadel Mall", destination="MUSC", region="Charleston, SC"),
+    Route(origin="MUSC", destination="Citadel Mall", region="Charleston, SC")
+)
+
+# EXPECTED DATABASE SCHEMA DEFINITION
+EXPECTED_HEADERS: Final[Sequence[str]] = (
+    "Timestamp",
+    "Region",
+    "Origin",
+    "Destination",
+    "Origin Lat",
+    "Origin Lng",
+    "Dest Lat",
+    "Dest Lng",
+    "Distance (mi)",
+    "Normal Duration (min)",
+    "Traffic Duration (min)",
+    "Delay (min)",
+    "Status"
 )
 
 # API keys and file paths.
@@ -71,7 +89,7 @@ GOOGLE_SHEETS_KEY_FILE: Final[str] = os.getenv("GOOGLE_SHEETS_KEY_FILE", "creden
 SPREADSHEET_NAME: Final[str] = os.getenv("SPREADSHEET_NAME", "Traffic_Log")
 WORKSHEET_NAME: Final[str] = os.getenv("WORKSHEET_NAME", "Log")
 
-# Network / concurrency tuning.
+# Network / concurrency tuning (Endpoint updated to fix case sensitivity 404s).
 ROUTES_API_URL: Final[str] = "https://routes.googleapis.com/directions/v2:computeRoutes"
 REQUEST_TIMEOUT: Final[tuple[float, float]] = (5.0, 15.0)  # (connect, read) seconds
 MAX_WORKERS: Final[int] = min(8, len(ROUTES)) or 1
@@ -113,13 +131,22 @@ class TrafficSample:
     traffic_min: float
     delay_min: float
     status: TrafficStatus
+    origin_lat: float
+    origin_lng: float
+    dest_lat: float
+    dest_lng: float
 
     def to_row(self, timestamp: str) -> list[str | float]:
-        """Serialize to a row matching the Google Sheet schema."""
+        """Serialize to a row matching the updated Google Sheet coordinates schema."""
         return [
             timestamp,
+            self.route.region,
             self.route.origin,
             self.route.destination,
+            self.origin_lat,
+            self.origin_lng,
+            self.dest_lat,
+            self.dest_lng,
             self.distance_miles,
             self.normal_min,
             self.traffic_min,
@@ -137,7 +164,7 @@ def build_session() -> requests.Session:
         read=3,
         backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"POST"}),  # Updated to allow POST for Routes API endpoints
+        allowed_methods=frozenset({"POST"}),
         raise_on_status=False,
     )
     adapter = HTTPAdapter(max_retries=retry, pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
@@ -147,7 +174,7 @@ def build_session() -> requests.Session:
     return session
 
 
-# --- AUTHENTICATION ---
+# --- AUTHENTICATION & INITIALIZATION ---
 def get_google_sheet() -> gspread.Worksheet:
     """Authorize against Google and return the target worksheet."""
     creds = Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
@@ -155,6 +182,25 @@ def get_google_sheet() -> gspread.Worksheet:
     )
     client = gspread.authorize(creds)
     return client.open(SPREADSHEET_NAME).worksheet(WORKSHEET_NAME)
+
+
+def ensure_database_schema(sheet: gspread.Worksheet) -> None:
+    """Programmatically validates row 1 schema, adding headers if absent."""
+    try:
+        first_row = sheet.row_values(1)
+        if not first_row or [str(h).strip().lower() for h in first_row] != [str(e).lower() for e in EXPECTED_HEADERS]:
+            logger.info("Database headers missing or mismatched. Re-initializing schema columns...")
+            
+            # If completely empty, insert headers at row 1. Otherwise, insert above historical entries.
+            if not first_row:
+                sheet.insert_row(list(EXPECTED_HEADERS), index=1)
+            else:
+                logger.warning("Existing headers don't match specification layout. Overwriting header row.")
+                sheet.update(range_name="A1", values=[list(EXPECTED_HEADERS)])
+                
+            logger.info("Database schema columns successfully verified.")
+    except Exception as e:
+        raise RuntimeError(f"Failed schema execution validation: {e}") from e
 
 
 # --- DATA EXTRACTION ---
@@ -165,15 +211,10 @@ def fetch_traffic_data(
 
     Utilizes explicit field masking to optimize network payloads and enforces
     TRAFFIC_AWARE preferences matching the project proposal.
-
-    Raises:
-        requests.HTTPError: on a non-2xx response after retries are exhausted.
-        KeyError / ValueError: if the response format fails parsing checks.
     """
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
-        # Field mask explicitly targets routing metrics
         "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.staticDuration"
     }
 
@@ -194,7 +235,7 @@ def fetch_traffic_data(
 
     route_data = data["routes"][0]
 
-    # Parse response strings (e.g., "750s" -> integer seconds)
+    # Parse response format strings securely (e.g., "750s" -> integer seconds)
     distance_meters: float = float(route_data["distanceMeters"])
     normal_seconds: float = float(route_data["staticDuration"].rstrip("s"))
     traffic_seconds: float = float(route_data["duration"].rstrip("s"))
@@ -211,6 +252,10 @@ def fetch_traffic_data(
         traffic_min=traffic_min,
         delay_min=delay_min,
         status=TrafficStatus.from_delay(delay_min),
+        origin_lat=LOCATIONS[route.origin].latitude,
+        origin_lng=LOCATIONS[route.origin].longitude,
+        dest_lat=LOCATIONS[route.destination].latitude,
+        dest_lng=LOCATIONS[route.destination].longitude,
     )
 
 
@@ -253,6 +298,14 @@ def main() -> int:
         logger.error("GOOGLE_MAPS_API_KEY is not set. Add it to your .env file.")
         return 1
 
+    try:
+        sheet = get_google_sheet()
+        # Ensure our database table matches expected structures before mining data
+        ensure_database_schema(sheet)
+    except Exception as exc:
+        logger.error("Database connection or schema validation aborted: %s", exc)
+        return 1
+
     samples = collect_samples(GOOGLE_MAPS_API_KEY)
     if not samples:
         logger.error("No traffic data could be fetched for any route.")
@@ -262,7 +315,6 @@ def main() -> int:
     rows = [sample.to_row(timestamp) for sample in samples]
 
     try:
-        sheet = get_google_sheet()
         # Batch all rows into a single API call for speed and quota efficiency.
         sheet.append_rows(rows, value_input_option=ValueInputOption.user_entered)
     except Exception as exc:  # noqa: BLE001 - report and fail with a non-zero code.
