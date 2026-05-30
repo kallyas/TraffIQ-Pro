@@ -1,5 +1,5 @@
 {
-  "buildCommand": "pnpm --filter ./frontend build && rm -rf dist && cp -R frontend/dist dist",
+  "buildCommand": "pnpm build",
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }

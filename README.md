@@ -199,21 +199,23 @@ mypy --strict monitor.py
 
 The web dashboard lives in `frontend/` as a Vite + React app styled with
 **MUI v9**. It loads live traffic rows through a Vercel serverless function
-(`/api/traffic`) that reads from Google Sheets using a service account.
+(`frontend/api/traffic.js`) that reads from Google Sheets using a service account.
 
 ### Local UI setup (pnpm)
 
 ```bash
+cd frontend
 pnpm install
-pnpm --filter ./frontend dev
+pnpm dev
 ```
 
-If you want local API access, run `vercel dev` in another terminal so `/api`
-routes are available. Vite proxies `/api` to `http://localhost:3000`.
+If you want local API access, run `vercel dev` from `frontend/` in another
+terminal so `/api` routes are available. Vite proxies `/api` to
+`http://localhost:3000`.
 
 ### Vercel environment variables
 
-Set these in your Vercel project:
+Set these in your Vercel project (Project Root: `frontend/`):
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
