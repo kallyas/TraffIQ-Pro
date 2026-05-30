@@ -1,28 +1,31 @@
-import { createTheme } from '@mui/material/styles';
+import { alpha, createTheme } from '@mui/material/styles';
 
 export const colors = {
-  bg: '#F4F6F8',
-  charcoal: '#1A252F',
-  slate: '#2C3E50',
-  muted: '#7F8C8D',
-  border: '#E2E8F0',
-  crimson: '#D63031',
-  coral: '#E17055',
-  calm: '#2E86DE'
+  bg: '#F5F7FB',
+  surface: '#FFFFFF',
+  charcoal: '#111827',
+  slate: '#1F2937',
+  muted: '#6B7280',
+  border: '#E5E7EB',
+  crimson: '#DC2626',
+  coral: '#F97316',
+  calm: '#2563EB',
+  indigo: '#4338CA',
+  teal: '#0F766E'
 };
 
 const theme = createTheme({
   palette: {
     mode: 'light',
     primary: {
-      main: colors.charcoal
+      main: colors.indigo
     },
     secondary: {
       main: colors.calm
     },
     background: {
       default: colors.bg,
-      paper: '#FFFFFF'
+      paper: colors.surface
     },
     text: {
       primary: colors.charcoal,
@@ -30,23 +33,47 @@ const theme = createTheme({
     }
   },
   typography: {
-    fontFamily: '"Inter", "Roboto", "Helvetica", "Arial", sans-serif'
+    fontFamily: '"Inter", "Roboto", "Helvetica", "Arial", sans-serif',
+    h4: {
+      fontWeight: 700
+    },
+    h5: {
+      fontWeight: 700
+    },
+    subtitle1: {
+      fontWeight: 600
+    },
+    subtitle2: {
+      fontWeight: 600,
+      textTransform: 'uppercase',
+      letterSpacing: '0.06em'
+    }
   },
   shape: {
-    borderRadius: 10
+    borderRadius: 16
   },
   components: {
     MuiAppBar: {
       styleOverrides: {
         colorPrimary: {
-          backgroundColor: colors.charcoal
+          backgroundColor: colors.slate
+        }
+      }
+    },
+    MuiButton: {
+      styleOverrides: {
+        root: {
+          borderRadius: 12,
+          textTransform: 'none',
+          fontWeight: 600
         }
       }
     },
     MuiPaper: {
       styleOverrides: {
         root: {
-          border: `1px solid ${colors.border}`
+          border: `1px solid ${colors.border}`,
+          boxShadow: `0 18px 40px ${alpha(colors.slate, 0.08)}`
         }
       }
     }
