@@ -110,6 +110,82 @@ runtime — no secrets are stored in the repo.
 > or organization-level secrets, add them in the corresponding section and make
 > sure the workflow/job references that environment.
 
+## Triggering from Google Apps Script
+
+You can trigger the GitHub Actions workflow from Google Apps Script by calling
+GitHub's workflow dispatch API. This is useful when a Google Sheet, Apps Script
+timer, or other Google Workspace automation should start the traffic monitor
+without moving the Python runtime out of GitHub Actions.
+
+The Apps Script helper is in:
+
+```text
+google-apps-script/trigger-workflow.js
+```
+
+### Create a GitHub token
+
+Create a fine-grained personal access token:
+
+1. Open GitHub → **Settings** → **Developer settings**.
+2. Open **Personal access tokens** → **Fine-grained tokens**.
+3. Click **Generate new token**.
+4. Select the owner and only this repository.
+5. Set repository permissions:
+
+| Permission | Access |
+| --- | --- |
+| `Actions` | Read and write |
+| `Contents` | Read-only |
+
+6. Generate the token and copy it. Store it securely; GitHub will not show it
+   again.
+
+### Configure Apps Script
+
+1. Open [script.google.com](https://script.google.com/) and create a project.
+2. Paste the contents of `google-apps-script/trigger-workflow.js` into the
+   Apps Script editor.
+3. Update these constants near the top of the file:
+
+```js
+const GITHUB_OWNER = 'OWNER';
+const GITHUB_REPO = 'TraffIQ-Pro';
+const WORKFLOW_FILE = 'hourly_traffic.yml';
+const BRANCH = 'main';
+```
+
+4. In Apps Script, open **Project Settings**.
+5. Under **Script properties**, add:
+
+| Property | Value |
+| --- | --- |
+| `GITHUB_TOKEN` | The fine-grained GitHub token |
+
+6. Run `triggerTrafficMonitor` manually once from the Apps Script editor and
+   approve the requested permissions.
+7. Open **Triggers** and add a time-based trigger for `triggerTrafficMonitor`.
+
+For an hourly schedule, choose:
+
+| Field | Value |
+| --- | --- |
+| Function | `triggerTrafficMonitor` |
+| Event source | Time-driven |
+| Type | Hour timer |
+| Interval | Every hour |
+
+When the trigger runs, Apps Script sends a `workflow_dispatch` request to:
+
+```text
+https://api.github.com/repos/OWNER/REPO/actions/workflows/hourly_traffic.yml/dispatches
+```
+
+The GitHub Actions workflow still uses the existing repository secrets
+(`GOOGLE_MAPS_API_KEY` and `GOOGLE_SERVICE_ACCOUNT_JSON`) to run `monitor.py`.
+Do not put Google Maps or Google service-account secrets in Apps Script for this
+trigger-only setup.
+
 ## Development
 
 Type-check with mypy (strict):
