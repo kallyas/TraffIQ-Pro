@@ -194,3 +194,38 @@ Type-check with mypy (strict):
 pip install mypy types-requests
 mypy --strict monitor.py
 ```
+
+## Dashboard UI (MUI v9)
+
+The web dashboard lives in `frontend/` as a Vite + React app styled with
+**MUI v9**. It loads live traffic rows through a Vercel serverless function
+(`/api/traffic`) that reads from Google Sheets using a service account.
+
+### Local UI setup (pnpm)
+
+```bash
+pnpm install
+pnpm --filter ./frontend dev
+```
+
+If you want local API access, run `vercel dev` in another terminal so `/api`
+routes are available. Vite proxies `/api` to `http://localhost:3000`.
+
+### Vercel environment variables
+
+Set these in your Vercel project:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | yes | **Base64-encoded** service-account JSON (full contents). |
+| `SPREADSHEET_ID` | yes | Target Google Sheet ID. |
+| `WORKSHEET_NAME` | no | Worksheet name (defaults to `Log`). |
+
+The service account must have access to the spreadsheet (share the sheet with
+the `client_email` from the JSON).
+
+Generate the base64 value locally:
+
+```bash
+base64 -i credentials.json
+```
