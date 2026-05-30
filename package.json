@@ -6,7 +6,7 @@
   "packageManager": "pnpm@9.7.0",
   "scripts": {
     "dev": "pnpm --filter ./frontend dev",
-    "build": "pnpm --filter ./frontend build",
+    "build": "pnpm --filter ./frontend build && rm -rf dist && cp -R frontend/dist dist",
     "preview": "pnpm --filter ./frontend preview"
   },
   "dependencies": {
