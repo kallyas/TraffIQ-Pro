@@ -1,6 +1,6 @@
 """Real-time traffic monitor.
 
-Queries the Google Distance Matrix API for live, traffic-adjusted travel times
+Queries the Google Maps Routes API (v1) for live, traffic-adjusted travel times
 between configured locations and appends the results to a Google Sheet.
 
 Designed to run as a scheduled job: routes are fetched concurrently, HTTP calls
@@ -32,11 +32,23 @@ load_dotenv()
 
 logger = logging.getLogger("traffiq")
 
+# --- TYPE DEFINITIONS FOR GEO ---
+@dataclass(frozen=True, slots=True)
+class LatLng:
+    """Strongly typed coordinates for the Routes API JSON payload."""
+    latitude: float
+    longitude: float
+
+    def to_payload(self) -> dict[str, dict[str, dict[str, float]]]:
+        """Format matching the official Google Routes API V1 geometry structure."""
+        return {"location": {"latLng": {"latitude": self.latitude, "longitude": self.longitude}}}
+
+
 # --- CONFIGURATION ---
-# Hardcoded coordinates ("lat,lng") based on proposal locations.
-LOCATIONS: Final[Mapping[str, str]] = {
-    "Citadel Mall": "32.7924,-80.0198",  # Charleston, SC
-    "MUSC": "32.7848,-79.9472",  # Charleston, SC
+# Hardcoded coordinate mappings updated to match LatLng structures
+LOCATIONS: Final[Mapping[str, LatLng]] = {
+    "Citadel Mall": LatLng(latitude=32.7924, longitude=-80.0198),  # Charleston, SC
+    "MUSC": LatLng(latitude=32.7848, longitude=-79.9472),          # Charleston, SC
 }
 
 
@@ -60,7 +72,7 @@ SPREADSHEET_NAME: Final[str] = os.getenv("SPREADSHEET_NAME", "Traffic_Log")
 WORKSHEET_NAME: Final[str] = os.getenv("WORKSHEET_NAME", "Log")
 
 # Network / concurrency tuning.
-DISTANCE_MATRIX_URL: Final[str] = "https://maps.googleapis.com/maps/api/distancematrix/json"
+ROUTES_API_URL: Final[str] = "https://routes.googleapis.com/directions/v2:computeRoutes"
 REQUEST_TIMEOUT: Final[tuple[float, float]] = (5.0, 15.0)  # (connect, read) seconds
 MAX_WORKERS: Final[int] = min(8, len(ROUTES)) or 1
 METERS_TO_MILES: Final[float] = 0.000621371
@@ -125,7 +137,7 @@ def build_session() -> requests.Session:
         read=3,
         backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET"}),
+        allowed_methods=frozenset({"POST"}),  # Updated to allow POST for Routes API endpoints
         raise_on_status=False,
     )
     adapter = HTTPAdapter(max_retries=retry, pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
@@ -149,46 +161,46 @@ def get_google_sheet() -> gspread.Worksheet:
 def fetch_traffic_data(
     session: requests.Session, route: Route, api_key: str
 ) -> TrafficSample:
-    """Query the Distance Matrix API for live, traffic-adjusted data for a route.
+    """Query the official Google Maps Routes API (V1) for live data for a route.
 
-    The Distance Matrix API is used here because it is optimized for simple
-    A-to-B matrix durations.
+    Utilizes explicit field masking to optimize network payloads and enforces
+    TRAFFIC_AWARE preferences matching the project proposal.
 
     Raises:
         requests.HTTPError: on a non-2xx response after retries are exhausted.
-        RuntimeError: when the API returns a non-OK status for the request or
-            the matrix element.
+        KeyError / ValueError: if the response format fails parsing checks.
     """
-    params = {
-        "origins": LOCATIONS[route.origin],
-        "destinations": LOCATIONS[route.destination],
-        "departure_time": "now",  # Crucial for live traffic-adjusted times.
-        "traffic_model": "best_guess",
-        "key": api_key,
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        # Field mask explicitly targets routing metrics
+        "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.staticDuration"
     }
 
-    response = session.get(DISTANCE_MATRIX_URL, params=params, timeout=REQUEST_TIMEOUT)
+    payload = {
+        "origin": LOCATIONS[route.origin].to_payload(),
+        "destination": LOCATIONS[route.destination].to_payload(),
+        "travelMode": "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE",
+        "computeAlternativeRoutes": False
+    }
+
+    response = session.post(ROUTES_API_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     data = response.json()
 
-    top_status = data.get("status")
-    if top_status != "OK":
-        message = data.get("error_message", "")
-        raise RuntimeError(f"Distance Matrix request failed: status={top_status} {message}".strip())
+    if "routes" not in data or not data["routes"]:
+        raise ValueError(f"No viable driving paths found between {route.origin} and {route.destination}")
 
-    element = data["rows"][0]["elements"][0]
-    element_status = element.get("status")
-    if element_status != "OK":
-        raise RuntimeError(f"No route between {route.origin} and {route.destination}: {element_status}")
+    route_data = data["routes"][0]
 
-    distance_meters: float = element["distance"]["value"]
-    duration_seconds: float = element["duration"]["value"]  # Baseline time.
-    # duration_in_traffic is only present when a valid departure_time is set;
-    # fall back to the baseline duration so a missing field never crashes us.
-    traffic_seconds: float = element.get("duration_in_traffic", element["duration"])["value"]
+    # Parse response strings (e.g., "750s" -> integer seconds)
+    distance_meters: float = float(route_data["distanceMeters"])
+    normal_seconds: float = float(route_data["staticDuration"].rstrip("s"))
+    traffic_seconds: float = float(route_data["duration"].rstrip("s"))
 
     distance_miles = round(distance_meters * METERS_TO_MILES, 2)
-    normal_min = round(duration_seconds / 60, 1)
+    normal_min = round(normal_seconds / 60, 1)
     traffic_min = round(traffic_seconds / 60, 1)
     delay_min = round(max(0.0, traffic_min - normal_min), 1)
 
