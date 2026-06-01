@@ -10,17 +10,26 @@ import RouteMapCard from './components/RouteMapCard.jsx';
 import TimeSeriesCard from './components/TimeSeriesCard.jsx';
 import useTrafficData from './hooks/useTrafficData.js';
 import { colors } from './theme.js';
-import { computeKpis, filterRecords } from './utils/traffic.js';
+import { buildTrafficQuery, computeKpis, filterRecords } from './utils/traffic.js';
 
 const defaultFilters = {
   region: 'all',
   route: 'all',
   status: 'all',
-  date: '',
+  range: 'all',
+  dateFrom: '',
+  dateTo: '',
   search: ''
 };
 
 export default function App() {
+  const [filters, setFilters] = useState(defaultFilters);
+
+  const dataQuery = useMemo(
+    () => buildTrafficQuery(filters),
+    [filters.range, filters.dateFrom, filters.dateTo]
+  );
+
   const {
     records,
     syncStatus,
@@ -29,9 +38,7 @@ export default function App() {
     isFetching,
     loadData,
     setAutoRefresh
-  } = useTrafficData();
-
-  const [filters, setFilters] = useState(defaultFilters);
+  } = useTrafficData(dataQuery);
 
   const filteredRecords = useMemo(() => filterRecords(records, filters), [records, filters]);
 

@@ -34,21 +34,28 @@ logger = logging.getLogger("traffiq")
 
 # --- TYPE DEFINITIONS FOR GEO ---
 @dataclass(frozen=True, slots=True)
-class LatLng:
-    """Strongly typed coordinates for the Routes API JSON payload."""
-    latitude: float
-    longitude: float
+class Place:
+    """A named waypoint addressed by its street address.
 
-    def to_payload(self) -> dict[str, dict[str, dict[str, float]]]:
-        """Format matching the official Google Routes API V1 geometry structure."""
-        return {"location": {"latLng": {"latitude": self.latitude, "longitude": self.longitude}}}
+    We send the *address string* to the Routes API rather than a hand-picked
+    lat/lng so Google geocodes the exact same point the Google Maps app would.
+    Hard-coded coordinates silently snap to the nearest road segment, which was
+    producing a shorter corridor (and therefore under-reported drive times).
+    The real geocoded coordinates are read back from the API response.
+    """
+
+    address: str
+
+    def to_payload(self) -> dict[str, str]:
+        """Routes API waypoint format using server-side geocoding."""
+        return {"address": self.address}
 
 
 # --- CONFIGURATION ---
-# Hardcoded coordinate mappings matching LatLng structures
-LOCATIONS: Final[Mapping[str, LatLng]] = {
-    "Citadel Mall": LatLng(latitude=32.7924, longitude=-80.0198),  # Charleston, SC
-    "MUSC": LatLng(latitude=32.7848, longitude=-79.9472),          # Charleston, SC
+# Addresses are geocoded by Google exactly as the client specified them.
+LOCATIONS: Final[Mapping[str, Place]] = {
+    "Citadel Mall": Place(address="2070 Sam Rittenberg Blvd, Charleston, SC 29407"),
+    "MUSC": Place(address="171 Ashley Ave, Charleston, SC 29425"),
 }
 
 
@@ -80,7 +87,10 @@ EXPECTED_HEADERS: Final[Sequence[str]] = (
     "Normal Duration (min)",
     "Traffic Duration (min)",
     "Delay (min)",
-    "Status"
+    "Status",
+    "Route",
+    "Notes",
+    "Polyline",
 )
 
 # API keys and file paths.
@@ -92,6 +102,7 @@ WORKSHEET_NAME: Final[str] = os.getenv("WORKSHEET_NAME", "Log")
 # Network / concurrency tuning (Endpoint updated to fix case sensitivity 404s).
 ROUTES_API_URL: Final[str] = "https://routes.googleapis.com/directions/v2:computeRoutes"
 REQUEST_TIMEOUT: Final[tuple[float, float]] = (5.0, 15.0)  # (connect, read) seconds
+DEPARTURE_BUFFER_SEC: Final[int] = 60  # keep departureTime just ahead of "now"
 MAX_WORKERS: Final[int] = min(8, len(ROUTES)) or 1
 METERS_TO_MILES: Final[float] = 0.000621371
 
@@ -135,6 +146,9 @@ class TrafficSample:
     origin_lng: float
     dest_lat: float
     dest_lng: float
+    route_summary: str
+    notes: str
+    polyline: str
 
     def to_row(self, timestamp: str) -> list[str | float]:
         """Serialize to a row matching the updated Google Sheet coordinates schema."""
@@ -152,6 +166,9 @@ class TrafficSample:
             self.traffic_min,
             self.delay_min,
             self.status.value,
+            self.route_summary,
+            self.notes,
+            self.polyline,
         ]
 
 
@@ -204,26 +221,48 @@ def ensure_database_schema(sheet: gspread.Worksheet) -> None:
 
 
 # --- DATA EXTRACTION ---
+def build_note(status: TrafficStatus, delay_min: float) -> str:
+    """Human-readable summary of current conditions for the Notes column."""
+    if status is TrafficStatus.HEAVY:
+        return f"Heavy traffic — running {delay_min:.0f} min over the free-flow time."
+    if status is TrafficStatus.MODERATE:
+        return f"Moderate congestion — about {delay_min:.0f} min of added delay."
+    return "Free-flowing — at or near the free-flow time."
+
+
 def fetch_traffic_data(
-    session: requests.Session, route: Route, api_key: str
+    session: requests.Session, route: Route, api_key: str, departure_time: str
 ) -> TrafficSample:
     """Query the official Google Maps Routes API (V1) for live data for a route.
 
-    Utilizes explicit field masking to optimize network payloads and enforces
-    TRAFFIC_AWARE preferences matching the project proposal.
+    Uses ``TRAFFIC_AWARE_OPTIMAL`` with an explicit ``departureTime`` of *now* so
+    Google returns the same high-precision, live-traffic estimate the Google Maps
+    app shows. The field mask also pulls the real geocoded endpoints and the
+    encoded route polyline so the dashboard can draw the actual driving path
+    instead of a straight line.
     """
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
-        "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.staticDuration"
+        "X-Goog-FieldMask": (
+            "routes.distanceMeters,"
+            "routes.duration,"
+            "routes.staticDuration,"
+            "routes.description,"
+            "routes.polyline.encodedPolyline,"
+            "routes.legs.startLocation.latLng,"
+            "routes.legs.endLocation.latLng"
+        ),
     }
 
     payload = {
         "origin": LOCATIONS[route.origin].to_payload(),
         "destination": LOCATIONS[route.destination].to_payload(),
         "travelMode": "DRIVE",
-        "routingPreference": "TRAFFIC_AWARE",
-        "computeAlternativeRoutes": False
+        "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
+        "departureTime": departure_time,
+        "computeAlternativeRoutes": False,
+        "units": "IMPERIAL",
     }
 
     response = session.post(ROUTES_API_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
@@ -244,6 +283,15 @@ def fetch_traffic_data(
     normal_min = round(normal_seconds / 60, 1)
     traffic_min = round(traffic_seconds / 60, 1)
     delay_min = round(max(0.0, traffic_min - normal_min), 1)
+    status = TrafficStatus.from_delay(delay_min)
+
+    # Read the real geocoded endpoints back from the response so map markers and
+    # the stored coordinates match exactly what Google resolved the address to.
+    legs = route_data.get("legs") or [{}]
+    start = legs[0].get("startLocation", {}).get("latLng", {})
+    end = legs[-1].get("endLocation", {}).get("latLng", {})
+    polyline = route_data.get("polyline", {}).get("encodedPolyline", "")
+    route_summary = route_data.get("description", "") or f"{route.origin} → {route.destination}"
 
     return TrafficSample(
         route=route,
@@ -251,20 +299,24 @@ def fetch_traffic_data(
         normal_min=normal_min,
         traffic_min=traffic_min,
         delay_min=delay_min,
-        status=TrafficStatus.from_delay(delay_min),
-        origin_lat=LOCATIONS[route.origin].latitude,
-        origin_lng=LOCATIONS[route.origin].longitude,
-        dest_lat=LOCATIONS[route.destination].latitude,
-        dest_lng=LOCATIONS[route.destination].longitude,
+        status=status,
+        origin_lat=float(start.get("latitude", 0.0)),
+        origin_lng=float(start.get("longitude", 0.0)),
+        dest_lat=float(end.get("latitude", 0.0)),
+        dest_lng=float(end.get("longitude", 0.0)),
+        route_summary=route_summary,
+        notes=build_note(status, delay_min),
+        polyline=polyline,
     )
 
 
-def collect_samples(api_key: str) -> list[TrafficSample]:
+def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
     """Fetch every route concurrently, isolating per-route failures."""
     samples: list[TrafficSample] = []
     with build_session() as session, ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
-            pool.submit(fetch_traffic_data, session, route, api_key): route for route in ROUTES
+            pool.submit(fetch_traffic_data, session, route, api_key, departure_time): route
+            for route in ROUTES
         }
         for future in as_completed(futures):
             route = futures[future]
@@ -306,7 +358,14 @@ def main() -> int:
         logger.error("Database connection or schema validation aborted: %s", exc)
         return 1
 
-    samples = collect_samples(GOOGLE_MAPS_API_KEY)
+    # Stamp departure as the immediate future in RFC-3339 UTC so the Routes API
+    # returns current-traffic data. Google rejects a timestamp in the past, so we
+    # add a small buffer to absorb clock skew and request latency; a minute out is
+    # still effectively "now" for live traffic purposes.
+    now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=DEPARTURE_BUFFER_SEC)
+    departure_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    samples = collect_samples(GOOGLE_MAPS_API_KEY, departure_time)
     if not samples:
         logger.error("No traffic data could be fetched for any route.")
         return 1

@@ -27,9 +27,6 @@ export default function FiltersPanel({
       <Stack spacing={2}>
         <Box>
           <Typography variant="subtitle1">Live Filters</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Refine the dashboard to focus on the corridor, time window, and congestion tier.
-          </Typography>
         </Box>
         <Grid container spacing={2}>
           <Grid item xs={12} sm={6} md={3}>
@@ -56,18 +53,19 @@ export default function FiltersPanel({
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={2}>
-            <TextField
-              fullWidth
-              size="small"
-              label="Date"
-              type="date"
-              value={filters.date}
-              onChange={onFilterChange('date')}
-              InputLabelProps={{ shrink: true }}
-            />
+          <Grid item xs={12} sm={6} md={3}>
+            <FormControl fullWidth size="small">
+              <InputLabel>Time Range</InputLabel>
+              <Select label="Time Range" value={filters.range} onChange={onFilterChange('range')}>
+                <MenuItem value="all">All Time</MenuItem>
+                <MenuItem value="1">Last 24 Hours</MenuItem>
+                <MenuItem value="7">Last 7 Days</MenuItem>
+                <MenuItem value="30">Last 30 Days</MenuItem>
+                <MenuItem value="custom">Custom Range…</MenuItem>
+              </Select>
+            </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={2}>
+          <Grid item xs={12} sm={6} md={3}>
             <FormControl fullWidth size="small">
               <InputLabel>Status</InputLabel>
               <Select label="Status" value={filters.status} onChange={onFilterChange('status')}>
@@ -78,6 +76,36 @@ export default function FiltersPanel({
               </Select>
             </FormControl>
           </Grid>
+
+          {filters.range === 'custom' && (
+            <>
+              <Grid item xs={12} sm={6} md={3}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="From"
+                  type="date"
+                  value={filters.dateFrom}
+                  onChange={onFilterChange('dateFrom')}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  inputProps={{ max: filters.dateTo || undefined }}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="To"
+                  type="date"
+                  value={filters.dateTo}
+                  onChange={onFilterChange('dateTo')}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  inputProps={{ min: filters.dateFrom || undefined }}
+                />
+              </Grid>
+            </>
+          )}
+
           <Grid item xs={12} md={6} lg={4}>
             <TextField
               fullWidth

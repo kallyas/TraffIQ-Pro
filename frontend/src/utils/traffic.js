@@ -17,10 +17,12 @@ export function buildCsv(rows) {
     'Origin',
     'Destination',
     'Distance (mi)',
-    'Base (min)',
-    'Live (min)',
+    'Normal Drive Time (min)',
+    'Traffic-Adjusted Time (min)',
     'Delay (min)',
-    'Status'
+    'Status',
+    'Route',
+    'Notes'
   ];
   const body = rows.map((row) => [
     row.timestamp,
@@ -31,7 +33,9 @@ export function buildCsv(rows) {
     row.base.toFixed(1),
     row.live.toFixed(1),
     row.delay.toFixed(1),
-    row.status || getSeverityLabel(getSeverity(row.delay))
+    row.status || getSeverityLabel(getSeverity(row.delay)),
+    row.route || '',
+    row.notes || ''
   ]);
 
   return [header, ...body]
@@ -62,6 +66,24 @@ export function computeKpis(records) {
   };
 }
 
+/**
+ * Build the query string for the traffic API from the active date range.
+ * Presets map to a rolling `days` window; "custom" maps to explicit from/to.
+ * The server applies the same window so large sheets aren't shipped wholesale.
+ */
+export function buildTrafficQuery(filters) {
+  const params = new URLSearchParams();
+  if (filters.range && filters.range !== 'all') {
+    if (filters.range === 'custom') {
+      if (filters.dateFrom) params.set('from', filters.dateFrom);
+      if (filters.dateTo) params.set('to', filters.dateTo);
+    } else {
+      params.set('days', filters.range);
+    }
+  }
+  return params.toString();
+}
+
 export function filterRecords(records, filters) {
   return records.filter((row) => {
     if (filters.region !== 'all' && !row.region.toLowerCase().includes(filters.region.toLowerCase())) {
@@ -76,10 +98,16 @@ export function filterRecords(records, filters) {
       return false;
     }
 
-    if (filters.date) {
+    // The server already windows by range; this is a defensive client-side
+    // guard for custom from/to so the view stays correct between refetches.
+    if (filters.range === 'custom') {
       const dateValue = row.timestampDate;
-      if (!dateValue) return false;
-      if (dateValue.toISOString().slice(0, 10) !== filters.date) return false;
+      if (filters.dateFrom) {
+        if (!dateValue || dateValue < new Date(`${filters.dateFrom}T00:00:00`)) return false;
+      }
+      if (filters.dateTo) {
+        if (!dateValue || dateValue > new Date(`${filters.dateTo}T23:59:59.999`)) return false;
+      }
     }
 
     if (filters.search) {

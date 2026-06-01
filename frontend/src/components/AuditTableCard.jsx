@@ -71,10 +71,12 @@ export default function AuditTableCard({ records, totalCount }) {
                 'Origin',
                 'Destination',
                 'Distance',
-                'Base Time',
-                'Live Time',
+                'Normal Time',
+                'Traffic Time',
                 'Delay',
-                'Status'
+                'Status',
+                'Route',
+                'Notes'
               ].map((header) => (
                 <TableCell key={header} sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
                   {header}
@@ -85,7 +87,7 @@ export default function AuditTableCard({ records, totalCount }) {
           <TableBody>
             {records.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} align="center" sx={{ py: 6 }}>
+                <TableCell colSpan={11} align="center" sx={{ py: 6 }}>
                   <Typography variant="body2" color="text.secondary">
                     No records match the current filter configuration criteria.
                   </Typography>
@@ -140,6 +142,12 @@ export default function AuditTableCard({ records, totalCount }) {
                       >
                         {record.status || getSeverityLabel(severity)}
                       </Box>
+                    </TableCell>
+                    <TableCell sx={{ fontSize: 12, color: colors.muted, maxWidth: 160 }}>
+                      {record.route || '--'}
+                    </TableCell>
+                    <TableCell sx={{ fontSize: 12, color: colors.muted, maxWidth: 220 }}>
+                      {record.notes || '--'}
                     </TableCell>
                   </TableRow>
                 );

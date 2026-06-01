@@ -1,9 +1,9 @@
 # TraffIQ-Pro
 
-Real-time traffic monitor for TraffIQ Pro. It queries the Google Distance Matrix
-API for live, traffic-adjusted travel times between configured locations and
-appends each measurement to a Google Sheet. It can run locally or hourly via
-GitHub Actions.
+Real-time traffic monitor for TraffIQ Pro. It queries the Google Maps Routes
+API (`TRAFFIC_AWARE_OPTIMAL` with a live `departureTime`) for traffic-adjusted
+travel times between configured locations and appends each measurement to a
+Google Sheet. It can run locally or hourly via GitHub Actions.
 
 ## How it works
 
@@ -12,13 +12,15 @@ network errors, classifies congestion (`Normal` / `Moderate Congestion` /
 `Heavy Traffic`), and writes all results to the target sheet in a single batched
 append.
 
-Routes and coordinates are defined at the top of `monitor.py` (`LOCATIONS` and
-`ROUTES`).
+Routes and addresses are defined at the top of `monitor.py` (`LOCATIONS` and
+`ROUTES`). Addresses are geocoded by Google so the resolved point matches the
+Google Maps app exactly; the real coordinates and the route polyline are read
+back from the API response.
 
 ## Requirements
 
 - Python 3.10+
-- A **Google Maps API key** with the Distance Matrix API enabled
+- A **Google Maps API key** with the Routes API enabled
 - A **Google service account** with access to your Google Sheet, and its JSON
   key file
 
@@ -29,7 +31,7 @@ required; the rest have sensible defaults.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `GOOGLE_MAPS_API_KEY` | yes | — | Google Maps Distance Matrix API key |
+| `GOOGLE_MAPS_API_KEY` | yes | — | Google Maps Routes API key |
 | `GOOGLE_SHEETS_KEY_FILE` | no | `credentials.json` | Path to the service-account JSON key |
 | `SPREADSHEET_NAME` | no | `Traffic_Log` | Target spreadsheet name |
 | `WORKSHEET_NAME` | no | `Log` | Target worksheet/tab name |
@@ -200,6 +202,18 @@ mypy --strict monitor.py
 The web dashboard lives in `frontend/` as a Vite + React app styled with
 **MUI v9**. It loads live traffic rows through a Vercel serverless function
 (`frontend/api/traffic.js`) that reads from Google Sheets using a service account.
+It draws the real Google-traced route polyline, tracks both directions, and lets
+you scope the view by time range (last 24h / 7d / 30d, or a custom from/to range).
+
+The `/api/traffic` function accepts optional query parameters so the date window
+is applied server-side (large sheets aren't shipped wholesale):
+
+| Param | Example | Effect |
+| --- | --- | --- |
+| `days` | `?days=7` | Rows from the last *N* days. |
+| `from` / `to` | `?from=2026-05-01&to=2026-05-31` | Rows within an explicit date range (inclusive). |
+
+When both are supplied, `from`/`to` takes precedence; with no params, all rows are returned.
 
 ### Local UI setup (pnpm)
 
