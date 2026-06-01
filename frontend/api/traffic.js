@@ -13,7 +13,10 @@ const HEADER_MAP = {
   'normal duration (min)': 'base',
   'traffic duration (min)': 'live',
   'delay (min)': 'delay',
-  'status': 'status'
+  'status': 'status',
+  'route': 'route',
+  'notes': 'notes',
+  'polyline': 'polyline'
 };
 
 const SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
@@ -26,6 +29,41 @@ function toNumber(value) {
 
 function normalizeHeader(header) {
   return String(header || '').trim().toLowerCase();
+}
+
+function parseRowDate(timestamp) {
+  if (!timestamp) return null;
+  // Sheet timestamps are "YYYY-MM-DD HH:MM:SS"; normalize to ISO-ish for Date().
+  const parsed = new Date(String(timestamp).replace(' ', 'T'));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Restrict rows by a rolling window (`days`) or an explicit `from`/`to` range.
+ * `from`/`to` take precedence when present. Invalid/absent params return all rows.
+ */
+function applyDateWindow(data, query) {
+  const { days, from, to } = query || {};
+
+  if (from || to) {
+    const fromMs = from ? new Date(`${from}T00:00:00`).getTime() : -Infinity;
+    const toMs = to ? new Date(`${to}T23:59:59.999`).getTime() : Infinity;
+    return data.filter((row) => {
+      const date = parseRowDate(row.timestamp);
+      return date && date.getTime() >= fromMs && date.getTime() <= toMs;
+    });
+  }
+
+  const dayCount = Number(days);
+  if (Number.isFinite(dayCount) && dayCount > 0) {
+    const cutoff = Date.now() - dayCount * 24 * 60 * 60 * 1000;
+    return data.filter((row) => {
+      const date = parseRowDate(row.timestamp);
+      return date && date.getTime() >= cutoff;
+    });
+  }
+
+  return data;
 }
 
 function getCredentials() {
@@ -66,7 +104,7 @@ export default async function handler(req, res) {
     });
 
     const sheets = google.sheets({ version: 'v4', auth });
-    const range = `${worksheetName}!A1:M`;
+    const range = `${worksheetName}!A1:P`;
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range
@@ -101,11 +139,16 @@ export default async function handler(req, res) {
       base: toNumber(row[headerIndex.base]),
       live: toNumber(row[headerIndex.live]),
       delay: toNumber(row[headerIndex.delay]),
-      status: row[headerIndex.status] || 'Normal'
+      status: row[headerIndex.status] || 'Normal',
+      route: row[headerIndex.route] || '',
+      notes: row[headerIndex.notes] || '',
+      polyline: row[headerIndex.polyline] || ''
     }));
 
+    const windowed = applyDateWindow(data, req.query);
+
     res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
-    res.status(200).json({ data });
+    res.status(200).json({ data: windowed });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to load sheet data.' });
   }

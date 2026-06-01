@@ -43,7 +43,7 @@ export default function HeaderBar({
               </Typography>
             </Stack>
             <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)' }}>
-              Real-time corridor performance, congestion trends, and operational signals.
+              Live Google Maps traffic-adjusted drive times for the MUSC shuttle corridor.
             </Typography>
           </Stack>
 

@@ -5,7 +5,7 @@ import { parseTimestamp, toNumber } from '../utils/format.js';
 const AUTO_REFRESH_MS = 60000;
 const API_URL = '/api/traffic';
 
-export default function useTrafficData() {
+export default function useTrafficData(query = '') {
   const [records, setRecords] = useState([]);
   const [syncStatus, setSyncStatus] = useState('live');
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -19,7 +19,7 @@ export default function useTrafficData() {
     setIsFetching(true);
     setSyncStatus('syncing');
     try {
-      const response = await fetch(API_URL);
+      const response = await fetch(query ? `${API_URL}?${query}` : API_URL);
       if (!response.ok) {
         throw new Error('Failed to fetch traffic data.');
       }
@@ -41,7 +41,10 @@ export default function useTrafficData() {
           base: toNumber(row.base),
           live: toNumber(row.live),
           delay: toNumber(row.delay),
-          status: row.status || 'Normal'
+          status: row.status || 'Normal',
+          route: row.route || '',
+          notes: row.notes || '',
+          polyline: row.polyline || ''
         }))
         .sort((a, b) => (b.timestampDate?.getTime() || 0) - (a.timestampDate?.getTime() || 0));
 
@@ -54,7 +57,7 @@ export default function useTrafficData() {
       inFlightRef.current = false;
       setIsFetching(false);
     }
-  }, []);
+  }, [query]);
 
   useEffect(() => {
     loadData();
