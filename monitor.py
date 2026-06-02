@@ -95,9 +95,13 @@ class Corridor:
         return {"via": True, "location": {"latLng": {"latitude": self.via_lat, "longitude": self.via_lng}}}
 
 
+# via points lifted from the interior of each corridor's own Google route
+# geometry, so the path passes through cleanly with no detours or U-turns.
+# (The previous pins sat just off the carriageway, forcing restricted-road
+# loops that inflated both time and distance by ~0.7 mi.)
 CORRIDORS: Final[Sequence[Corridor]] = (
-    Corridor(label="US-17 (Savannah Hwy)", via_lat=32.78670, via_lng=-79.98890),
-    Corridor(label="SC-61 (Ashley River Rd)", via_lat=32.78066, via_lng=-79.97181),
+    Corridor(label="US-17 (Savannah Hwy)", via_lat=32.78647, via_lng=-80.01123),
+    Corridor(label="SC-61 (Ashley River Rd)", via_lat=32.79073, via_lng=-79.98681),
 )
 
 # EXPECTED DATABASE SCHEMA DEFINITION
