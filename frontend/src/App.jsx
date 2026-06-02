@@ -42,6 +42,13 @@ export default function App() {
 
   const filteredRecords = useMemo(() => filterRecords(records, filters), [records, filters]);
 
+  // Aggregate views reflect the route the shuttle would actually take (the
+  // recommended/fastest corridor); the map and audit log still show every option.
+  const recommendedRecords = useMemo(() => {
+    const recommended = filteredRecords.filter((row) => row.recommended);
+    return recommended.length ? recommended : filteredRecords;
+  }, [filteredRecords]);
+
   const routeOptions = useMemo(() => {
     const set = new Set(records.map((row) => `${row.origin} → ${row.destination}`).filter(Boolean));
     return ['all', ...set];
@@ -52,7 +59,7 @@ export default function App() {
     return ['all', ...set];
   }, [records]);
 
-  const kpis = useMemo(() => computeKpis(filteredRecords), [filteredRecords]);
+  const kpis = useMemo(() => computeKpis(recommendedRecords), [recommendedRecords]);
 
   const handleFilterChange = (key) => (event) => {
     setFilters((prev) => ({ ...prev, [key]: event.target.value }));
@@ -84,14 +91,14 @@ export default function App() {
 
         <Grid container spacing={3}>
           <Grid item xs={12} lg={7}>
-            <TimeSeriesCard records={filteredRecords} />
+            <TimeSeriesCard records={recommendedRecords} />
           </Grid>
           <Grid item xs={12} lg={5}>
             <RouteMapCard records={filteredRecords} />
           </Grid>
         </Grid>
 
-        <HeatmapCard records={filteredRecords} />
+        <HeatmapCard records={recommendedRecords} />
 
         <AuditTableCard records={filteredRecords} totalCount={records.length} />
       </Container>

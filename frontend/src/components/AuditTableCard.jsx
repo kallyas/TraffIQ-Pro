@@ -76,6 +76,7 @@ export default function AuditTableCard({ records, totalCount }) {
                 'Delay',
                 'Status',
                 'Route',
+                'Best',
                 'Notes'
               ].map((header) => (
                 <TableCell key={header} sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
@@ -87,7 +88,7 @@ export default function AuditTableCard({ records, totalCount }) {
           <TableBody>
             {records.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} align="center" sx={{ py: 6 }}>
+                <TableCell colSpan={12} align="center" sx={{ py: 6 }}>
                   <Typography variant="body2" color="text.secondary">
                     No records match the current filter configuration criteria.
                   </Typography>
@@ -145,6 +146,28 @@ export default function AuditTableCard({ records, totalCount }) {
                     </TableCell>
                     <TableCell sx={{ fontSize: 12, color: colors.muted, maxWidth: 160 }}>
                       {record.route || '--'}
+                    </TableCell>
+                    <TableCell>
+                      {record.recommended ? (
+                        <Box
+                          component="span"
+                          sx={{
+                            px: 1,
+                            py: 0.25,
+                            borderRadius: 999,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            bgcolor: '#D1FAE5',
+                            color: colors.teal
+                          }}
+                        >
+                          ✓ Best
+                        </Box>
+                      ) : (
+                        <Typography component="span" variant="caption" color="text.secondary">
+                          —
+                        </Typography>
+                      )}
                     </TableCell>
                     <TableCell sx={{ fontSize: 12, color: colors.muted, maxWidth: 220 }}>
                       {record.notes || '--'}

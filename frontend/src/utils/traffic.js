@@ -22,6 +22,7 @@ export function buildCsv(rows) {
     'Delay (min)',
     'Status',
     'Route',
+    'Recommended',
     'Notes'
   ];
   const body = rows.map((row) => [
@@ -35,6 +36,7 @@ export function buildCsv(rows) {
     row.delay.toFixed(1),
     row.status || getSeverityLabel(getSeverity(row.delay)),
     row.route || '',
+    row.recommended ? 'Yes' : 'No',
     row.notes || ''
   ]);
 
@@ -82,6 +84,40 @@ export function buildTrafficQuery(filters) {
     }
   }
   return params.toString();
+}
+
+/**
+ * From the most recent sample, gather every corridor option for that direction
+ * at that timestamp, ordered fastest-first, and identify the recommended one.
+ * `records` is expected newest-first (as the data hook provides).
+ */
+export function getLatestComparison(records) {
+  if (!records.length) return null;
+
+  const latest = records[0];
+  const options = records
+    .filter(
+      (row) =>
+        row.origin === latest.origin &&
+        row.destination === latest.destination &&
+        row.timestamp === latest.timestamp
+    )
+    .sort((a, b) => a.live - b.live);
+
+  if (!options.length) return null;
+
+  const recommended = options.find((row) => row.recommended) || options[0];
+  const alternative = options.find((row) => row !== recommended) || null;
+
+  return {
+    origin: latest.origin,
+    destination: latest.destination,
+    timestamp: latest.timestamp,
+    options,
+    recommended,
+    alternative,
+    savingsMin: alternative ? Math.max(0, alternative.live - recommended.live) : 0
+  };
 }
 
 export function filterRecords(records, filters) {
