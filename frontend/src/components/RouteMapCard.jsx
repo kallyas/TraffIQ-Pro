@@ -9,9 +9,16 @@ import { getLatestComparison, getSeverity, getSeverityLabel } from '../utils/tra
 const MAP_CENTER = [32.7886, -79.9835];
 
 const SEVERITY_STYLE = {
-  heavy: { color: colors.crimson, weight: 8 },
-  moderate: { color: colors.coral, weight: 6 },
-  normal: { color: colors.calm, weight: 5 }
+  heavy: { color: colors.trafficHeavy, weight: 8 },
+  moderate: { color: colors.trafficModerate, weight: 7 },
+  normal: { color: colors.trafficClear, weight: 6 }
+};
+
+// Soft background tints for the legend/severity pills, keyed to the line colour.
+const SEVERITY_TINT = {
+  heavy: '#FCE8E6',
+  moderate: '#FEF7E0',
+  normal: '#E6F4EA'
 };
 
 function endpointIcon(fill) {
@@ -40,6 +47,7 @@ export default function RouteMapCard({ records }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const altLineRef = useRef(null);
+  const altCasingRef = useRef(null);
   const routeLineRef = useRef(null);
   const casingRef = useRef(null);
   const markerOriginRef = useRef(null);
@@ -55,14 +63,18 @@ export default function RouteMapCard({ records }) {
     }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-    // Alternative corridor (faded, dashed) sits beneath the recommended route.
+    // Alternative corridor (Google route-blue, dashed) sits beneath the
+    // recommended route. Its own white casing keeps it readable on the grey map.
+    altCasingRef.current = L.polyline([], { color: colors.routeCasing, weight: 9, opacity: 0.9 }).addTo(map);
     altLineRef.current = L.polyline([], {
-      color: colors.muted,
-      weight: 4,
-      opacity: 0.55,
-      dashArray: '6 8'
+      color: colors.routeAlt,
+      weight: 5,
+      opacity: 0.9,
+      dashArray: '6 8',
+      lineCap: 'round',
+      lineJoin: 'round'
     }).addTo(map);
-    casingRef.current = L.polyline([], { color: '#FFFFFF', weight: 10, opacity: 0.9 }).addTo(map);
+    casingRef.current = L.polyline([], { color: colors.routeCasing, weight: 10, opacity: 0.9 }).addTo(map);
     routeLineRef.current = L.polyline([], {
       color: colors.calm,
       weight: 5,
@@ -85,22 +97,26 @@ export default function RouteMapCard({ records }) {
     const map = mapInstance.current;
     const routeLine = routeLineRef.current;
     const altLine = altLineRef.current;
+    const altCasing = altCasingRef.current;
     const casing = casingRef.current;
     const markerOrigin = markerOriginRef.current;
     const markerDest = markerDestRef.current;
 
-    if (!map || !routeLine || !altLine || !casing || !markerOrigin || !markerDest) return;
+    if (!map || !routeLine || !altLine || !altCasing || !casing || !markerOrigin || !markerDest) return;
 
     if (!comparison || recommendedPath.length < 2) {
       routeLine.setLatLngs([]);
       altLine.setLatLngs([]);
+      altCasing.setLatLngs([]);
       casing.setLatLngs([]);
       return;
     }
 
     routeLine.setLatLngs(recommendedPath);
     casing.setLatLngs(recommendedPath);
-    altLine.setLatLngs(alternativePath.length >= 2 ? alternativePath : []);
+    const altPoints = alternativePath.length >= 2 ? alternativePath : [];
+    altLine.setLatLngs(altPoints);
+    altCasing.setLatLngs(altPoints);
 
     const origin = recommendedPath[0];
     const dest = recommendedPath[recommendedPath.length - 1];
@@ -128,9 +144,9 @@ export default function RouteMapCard({ records }) {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
-            <Chip label="Normal" size="small" sx={{ bgcolor: '#DBEAFE', color: colors.calm }} />
-            <Chip label="Moderate" size="small" sx={{ bgcolor: '#FFEDD5', color: colors.coral }} />
-            <Chip label="Heavy" size="small" sx={{ bgcolor: '#FEE2E2', color: colors.crimson }} />
+            <Chip label="Normal" size="small" sx={{ bgcolor: SEVERITY_TINT.normal, color: colors.trafficClear }} />
+            <Chip label="Moderate" size="small" sx={{ bgcolor: SEVERITY_TINT.moderate, color: '#B06000' }} />
+            <Chip label="Heavy" size="small" sx={{ bgcolor: SEVERITY_TINT.heavy, color: colors.trafficHeavy }} />
           </Stack>
         </Stack>
 
@@ -151,65 +167,55 @@ export default function RouteMapCard({ records }) {
             <Box
               sx={{
                 position: 'absolute',
-                top: 12,
-                left: 12,
+                top: 10,
+                left: 10,
                 zIndex: 500,
-                p: 1.75,
-                minWidth: 240,
-                maxWidth: 300,
+                p: 1.25,
+                maxWidth: 220,
                 borderRadius: 2,
                 bgcolor: 'rgba(255,255,255,0.94)',
                 border: `1px solid ${colors.border}`,
-                boxShadow: '0 10px 30px rgba(15,23,42,0.12)',
+                boxShadow: '0 6px 20px rgba(15,23,42,0.12)',
                 backdropFilter: 'blur(6px)'
               }}
             >
-              <Typography variant="subtitle2" sx={{ textTransform: 'none', letterSpacing: 0 }}>
-                {comparison.origin} → {comparison.destination}
-              </Typography>
-
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
+              <Stack direction="row" spacing={0.75} alignItems="center">
                 <Chip
                   label="Take this"
                   size="small"
-                  sx={{ bgcolor: colors.teal, color: '#fff', fontWeight: 700, height: 20 }}
+                  sx={{ bgcolor: colors.teal, color: '#fff', fontWeight: 700, height: 18, fontSize: 11 }}
                 />
-                <Typography variant="subtitle2" sx={{ textTransform: 'none', letterSpacing: 0 }}>
+                <Typography
+                  variant="caption"
+                  sx={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                >
                   {rec.route || 'Fastest route'}
                 </Typography>
               </Stack>
 
-              <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
-                <Box>
-                  <Typography variant="caption" color="text.secondary">
-                    Live
-                  </Typography>
-                  <Typography variant="h6" sx={{ lineHeight: 1.1 }}>
-                    {rec.live.toFixed(0)} min
-                  </Typography>
-                </Box>
-                <Box>
-                  <Typography variant="caption" color="text.secondary">
-                    Free-flow
-                  </Typography>
-                  <Typography variant="h6" sx={{ lineHeight: 1.1, color: colors.muted }}>
-                    {rec.base.toFixed(0)} min
-                  </Typography>
-                </Box>
+              <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mt: 0.5 }}>
+                <Typography sx={{ fontSize: 22, fontWeight: 700, lineHeight: 1 }}>
+                  {rec.live.toFixed(0)}
+                  <Box component="span" sx={{ fontSize: 12, fontWeight: 600, ml: 0.25 }}>
+                    min
+                  </Box>
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {rec.base.toFixed(0)} min free-flow
+                </Typography>
               </Stack>
 
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.25 }}>
+              <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.75 }}>
                 <Box
                   component="span"
                   sx={{
-                    px: 1,
+                    px: 0.75,
                     py: 0.25,
                     borderRadius: 999,
-                    fontSize: 11,
+                    fontSize: 10.5,
                     fontWeight: 700,
-                    color: SEVERITY_STYLE[severity].color,
-                    bgcolor:
-                      severity === 'heavy' ? '#FEE2E2' : severity === 'moderate' ? '#FFEDD5' : '#DBEAFE'
+                    color: severity === 'moderate' ? '#B06000' : SEVERITY_STYLE[severity].color,
+                    bgcolor: SEVERITY_TINT[severity]
                   }}
                 >
                   {getSeverityLabel(severity)} · +{rec.delay.toFixed(0)}m
@@ -225,11 +231,11 @@ export default function RouteMapCard({ records }) {
                 <Typography
                   variant="caption"
                   color="text.secondary"
-                  sx={{ display: 'block', mt: 1.25, pt: 1, borderTop: `1px solid ${colors.border}` }}
+                  sx={{ display: 'block', mt: 0.75, fontSize: 10.5, lineHeight: 1.3 }}
                 >
                   {comparison.savingsMin >= 0.5
-                    ? `${comparison.savingsMin.toFixed(0)} min faster than ${comparison.alternative.route} (${comparison.alternative.live.toFixed(0)} min).`
-                    : `About even with ${comparison.alternative.route} (${comparison.alternative.live.toFixed(0)} min).`}
+                    ? `${comparison.savingsMin.toFixed(0)} min faster than ${comparison.alternative.route}`
+                    : `About even with ${comparison.alternative.route}`}
                 </Typography>
               )}
             </Box>
