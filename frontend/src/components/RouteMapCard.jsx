@@ -4,7 +4,7 @@ import L from 'leaflet';
 
 import { colors } from '../theme.js';
 import { decodePolyline } from '../utils/format.js';
-import { getSeverity, getSeverityLabel } from '../utils/traffic.js';
+import { getLatestComparison, getSeverity, getSeverityLabel } from '../utils/traffic.js';
 
 const MAP_CENTER = [32.7886, -79.9835];
 
@@ -23,9 +23,23 @@ function endpointIcon(fill) {
   });
 }
 
+function pathFor(record) {
+  if (!record) return [];
+  const decoded = decodePolyline(record.polyline);
+  if (decoded.length >= 2) return decoded;
+  if ([record.originLat, record.originLng, record.destLat, record.destLng].every(Number.isFinite)) {
+    return [
+      [record.originLat, record.originLng],
+      [record.destLat, record.destLng]
+    ];
+  }
+  return [];
+}
+
 export default function RouteMapCard({ records }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
+  const altLineRef = useRef(null);
   const routeLineRef = useRef(null);
   const casingRef = useRef(null);
   const markerOriginRef = useRef(null);
@@ -41,7 +55,13 @@ export default function RouteMapCard({ records }) {
     }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-    // A wider white "casing" sits under the colored route for a Maps-like look.
+    // Alternative corridor (faded, dashed) sits beneath the recommended route.
+    altLineRef.current = L.polyline([], {
+      color: colors.muted,
+      weight: 4,
+      opacity: 0.55,
+      dashArray: '6 8'
+    }).addTo(map);
     casingRef.current = L.polyline([], { color: '#FFFFFF', weight: 10, opacity: 0.9 }).addTo(map);
     routeLineRef.current = L.polyline([], {
       color: colors.calm,
@@ -56,60 +76,55 @@ export default function RouteMapCard({ records }) {
     mapInstance.current = map;
   }, []);
 
-  const latest = useMemo(() => (records.length ? records[0] : null), [records]);
+  const comparison = useMemo(() => getLatestComparison(records), [records]);
 
-  const path = useMemo(() => {
-    if (!latest) return [];
-    const decoded = decodePolyline(latest.polyline);
-    if (decoded.length >= 2) return decoded;
-    // Fallback: straight segment between geocoded endpoints when no polyline.
-    if ([latest.originLat, latest.originLng, latest.destLat, latest.destLng].every(Number.isFinite)) {
-      return [
-        [latest.originLat, latest.originLng],
-        [latest.destLat, latest.destLng]
-      ];
-    }
-    return [];
-  }, [latest]);
+  const recommendedPath = useMemo(() => pathFor(comparison?.recommended), [comparison]);
+  const alternativePath = useMemo(() => pathFor(comparison?.alternative), [comparison]);
 
   useEffect(() => {
     const map = mapInstance.current;
     const routeLine = routeLineRef.current;
+    const altLine = altLineRef.current;
     const casing = casingRef.current;
     const markerOrigin = markerOriginRef.current;
     const markerDest = markerDestRef.current;
 
-    if (!map || !routeLine || !casing || !markerOrigin || !markerDest) return;
+    if (!map || !routeLine || !altLine || !casing || !markerOrigin || !markerDest) return;
 
-    if (!latest || path.length < 2) {
+    if (!comparison || recommendedPath.length < 2) {
       routeLine.setLatLngs([]);
+      altLine.setLatLngs([]);
       casing.setLatLngs([]);
       return;
     }
 
-    routeLine.setLatLngs(path);
-    casing.setLatLngs(path);
+    routeLine.setLatLngs(recommendedPath);
+    casing.setLatLngs(recommendedPath);
+    altLine.setLatLngs(alternativePath.length >= 2 ? alternativePath : []);
 
-    const origin = path[0];
-    const dest = path[path.length - 1];
-    markerOrigin.setLatLng(origin).bindPopup(`<b>${latest.origin}</b><br/>Origin`);
-    markerDest.setLatLng(dest).bindPopup(`<b>${latest.destination}</b><br/>Destination`);
+    const origin = recommendedPath[0];
+    const dest = recommendedPath[recommendedPath.length - 1];
+    markerOrigin.setLatLng(origin).bindPopup(`<b>${comparison.origin}</b><br/>Origin`);
+    markerDest.setLatLng(dest).bindPopup(`<b>${comparison.destination}</b><br/>Destination`);
 
-    routeLine.setStyle(SEVERITY_STYLE[getSeverity(latest.delay)] || SEVERITY_STYLE.normal);
+    routeLine.setStyle(SEVERITY_STYLE[getSeverity(comparison.recommended.delay)] || SEVERITY_STYLE.normal);
 
-    map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
-  }, [latest, path]);
+    const bounds = routeLine.getBounds();
+    if (alternativePath.length >= 2) bounds.extend(altLine.getBounds());
+    map.fitBounds(bounds, { padding: [40, 40] });
+  }, [comparison, recommendedPath, alternativePath]);
 
-  const severity = latest ? getSeverity(latest.delay) : 'normal';
+  const rec = comparison?.recommended;
+  const severity = rec ? getSeverity(rec.delay) : 'normal';
 
   return (
     <Paper sx={{ p: 3, height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Stack spacing={2} sx={{ flexGrow: 1 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
           <Box>
-            <Typography variant="subtitle1">Live Driving Route</Typography>
+            <Typography variant="subtitle1">Recommended Route</Typography>
             <Typography variant="body2" color="text.secondary">
-              Actual Google-traced path and traffic-adjusted time for the latest sample.
+              Fastest corridor right now, with the alternate highway shown dashed.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
@@ -132,7 +147,7 @@ export default function RouteMapCard({ records }) {
             }}
           />
 
-          {latest && (
+          {rec && (
             <Box
               sx={{
                 position: 'absolute',
@@ -140,7 +155,8 @@ export default function RouteMapCard({ records }) {
                 left: 12,
                 zIndex: 500,
                 p: 1.75,
-                minWidth: 220,
+                minWidth: 240,
+                maxWidth: 300,
                 borderRadius: 2,
                 bgcolor: 'rgba(255,255,255,0.94)',
                 border: `1px solid ${colors.border}`,
@@ -149,20 +165,27 @@ export default function RouteMapCard({ records }) {
               }}
             >
               <Typography variant="subtitle2" sx={{ textTransform: 'none', letterSpacing: 0 }}>
-                {latest.origin} → {latest.destination}
+                {comparison.origin} → {comparison.destination}
               </Typography>
-              {latest.route && (
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                  via {latest.route}
+
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
+                <Chip
+                  label="Take this"
+                  size="small"
+                  sx={{ bgcolor: colors.teal, color: '#fff', fontWeight: 700, height: 20 }}
+                />
+                <Typography variant="subtitle2" sx={{ textTransform: 'none', letterSpacing: 0 }}>
+                  {rec.route || 'Fastest route'}
                 </Typography>
-              )}
-              <Stack direction="row" spacing={2} sx={{ mt: 0.5 }}>
+              </Stack>
+
+              <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
                 <Box>
                   <Typography variant="caption" color="text.secondary">
                     Live
                   </Typography>
                   <Typography variant="h6" sx={{ lineHeight: 1.1 }}>
-                    {latest.live.toFixed(0)} min
+                    {rec.live.toFixed(0)} min
                   </Typography>
                 </Box>
                 <Box>
@@ -170,10 +193,11 @@ export default function RouteMapCard({ records }) {
                     Free-flow
                   </Typography>
                   <Typography variant="h6" sx={{ lineHeight: 1.1, color: colors.muted }}>
-                    {latest.base.toFixed(0)} min
+                    {rec.base.toFixed(0)} min
                   </Typography>
                 </Box>
               </Stack>
+
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.25 }}>
                 <Box
                   component="span"
@@ -185,21 +209,29 @@ export default function RouteMapCard({ records }) {
                     fontWeight: 700,
                     color: SEVERITY_STYLE[severity].color,
                     bgcolor:
-                      severity === 'heavy'
-                        ? '#FEE2E2'
-                        : severity === 'moderate'
-                          ? '#FFEDD5'
-                          : '#DBEAFE'
+                      severity === 'heavy' ? '#FEE2E2' : severity === 'moderate' ? '#FFEDD5' : '#DBEAFE'
                   }}
                 >
-                  {getSeverityLabel(severity)} · +{latest.delay.toFixed(0)}m
+                  {getSeverityLabel(severity)} · +{rec.delay.toFixed(0)}m
                 </Box>
-                {Number.isFinite(latest.distance) && latest.distance > 0 && (
+                {Number.isFinite(rec.distance) && rec.distance > 0 && (
                   <Typography variant="caption" color="text.secondary">
-                    {latest.distance.toFixed(1)} mi
+                    {rec.distance.toFixed(1)} mi
                   </Typography>
                 )}
               </Stack>
+
+              {comparison.alternative && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: 'block', mt: 1.25, pt: 1, borderTop: `1px solid ${colors.border}` }}
+                >
+                  {comparison.savingsMin >= 0.5
+                    ? `${comparison.savingsMin.toFixed(0)} min faster than ${comparison.alternative.route} (${comparison.alternative.live.toFixed(0)} min).`
+                    : `About even with ${comparison.alternative.route} (${comparison.alternative.live.toFixed(0)} min).`}
+                </Typography>
+              )}
             </Box>
           )}
         </Box>
