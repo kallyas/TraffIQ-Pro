@@ -9,9 +9,16 @@ import { getLatestComparison, getSeverity, getSeverityLabel } from '../utils/tra
 const MAP_CENTER = [32.7886, -79.9835];
 
 const SEVERITY_STYLE = {
-  heavy: { color: colors.crimson, weight: 8 },
-  moderate: { color: colors.coral, weight: 6 },
-  normal: { color: colors.calm, weight: 5 }
+  heavy: { color: colors.trafficHeavy, weight: 8 },
+  moderate: { color: colors.trafficModerate, weight: 7 },
+  normal: { color: colors.trafficClear, weight: 6 }
+};
+
+// Soft background tints for the legend/severity pills, keyed to the line colour.
+const SEVERITY_TINT = {
+  heavy: '#FCE8E6',
+  moderate: '#FEF7E0',
+  normal: '#E6F4EA'
 };
 
 function endpointIcon(fill) {
@@ -40,6 +47,7 @@ export default function RouteMapCard({ records }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const altLineRef = useRef(null);
+  const altCasingRef = useRef(null);
   const routeLineRef = useRef(null);
   const casingRef = useRef(null);
   const markerOriginRef = useRef(null);
@@ -55,14 +63,18 @@ export default function RouteMapCard({ records }) {
     }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-    // Alternative corridor (faded, dashed) sits beneath the recommended route.
+    // Alternative corridor (Google route-blue, dashed) sits beneath the
+    // recommended route. Its own white casing keeps it readable on the grey map.
+    altCasingRef.current = L.polyline([], { color: colors.routeCasing, weight: 9, opacity: 0.9 }).addTo(map);
     altLineRef.current = L.polyline([], {
-      color: colors.muted,
-      weight: 4,
-      opacity: 0.55,
-      dashArray: '6 8'
+      color: colors.routeAlt,
+      weight: 5,
+      opacity: 0.9,
+      dashArray: '6 8',
+      lineCap: 'round',
+      lineJoin: 'round'
     }).addTo(map);
-    casingRef.current = L.polyline([], { color: '#FFFFFF', weight: 10, opacity: 0.9 }).addTo(map);
+    casingRef.current = L.polyline([], { color: colors.routeCasing, weight: 10, opacity: 0.9 }).addTo(map);
     routeLineRef.current = L.polyline([], {
       color: colors.calm,
       weight: 5,
@@ -85,22 +97,26 @@ export default function RouteMapCard({ records }) {
     const map = mapInstance.current;
     const routeLine = routeLineRef.current;
     const altLine = altLineRef.current;
+    const altCasing = altCasingRef.current;
     const casing = casingRef.current;
     const markerOrigin = markerOriginRef.current;
     const markerDest = markerDestRef.current;
 
-    if (!map || !routeLine || !altLine || !casing || !markerOrigin || !markerDest) return;
+    if (!map || !routeLine || !altLine || !altCasing || !casing || !markerOrigin || !markerDest) return;
 
     if (!comparison || recommendedPath.length < 2) {
       routeLine.setLatLngs([]);
       altLine.setLatLngs([]);
+      altCasing.setLatLngs([]);
       casing.setLatLngs([]);
       return;
     }
 
     routeLine.setLatLngs(recommendedPath);
     casing.setLatLngs(recommendedPath);
-    altLine.setLatLngs(alternativePath.length >= 2 ? alternativePath : []);
+    const altPoints = alternativePath.length >= 2 ? alternativePath : [];
+    altLine.setLatLngs(altPoints);
+    altCasing.setLatLngs(altPoints);
 
     const origin = recommendedPath[0];
     const dest = recommendedPath[recommendedPath.length - 1];
@@ -128,9 +144,9 @@ export default function RouteMapCard({ records }) {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
-            <Chip label="Normal" size="small" sx={{ bgcolor: '#DBEAFE', color: colors.calm }} />
-            <Chip label="Moderate" size="small" sx={{ bgcolor: '#FFEDD5', color: colors.coral }} />
-            <Chip label="Heavy" size="small" sx={{ bgcolor: '#FEE2E2', color: colors.crimson }} />
+            <Chip label="Normal" size="small" sx={{ bgcolor: SEVERITY_TINT.normal, color: colors.trafficClear }} />
+            <Chip label="Moderate" size="small" sx={{ bgcolor: SEVERITY_TINT.moderate, color: '#B06000' }} />
+            <Chip label="Heavy" size="small" sx={{ bgcolor: SEVERITY_TINT.heavy, color: colors.trafficHeavy }} />
           </Stack>
         </Stack>
 
@@ -207,9 +223,8 @@ export default function RouteMapCard({ records }) {
                     borderRadius: 999,
                     fontSize: 11,
                     fontWeight: 700,
-                    color: SEVERITY_STYLE[severity].color,
-                    bgcolor:
-                      severity === 'heavy' ? '#FEE2E2' : severity === 'moderate' ? '#FFEDD5' : '#DBEAFE'
+                    color: severity === 'moderate' ? '#B06000' : SEVERITY_STYLE[severity].color,
+                    bgcolor: SEVERITY_TINT[severity]
                   }}
                 >
                   {getSeverityLabel(severity)} · +{rec.delay.toFixed(0)}m

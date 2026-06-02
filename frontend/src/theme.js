@@ -11,7 +11,16 @@ export const colors = {
   coral: '#F97316',
   calm: '#2563EB',
   indigo: '#4338CA',
-  teal: '#0F766E'
+  teal: '#0F766E',
+  // Google Maps-style route palette. The basemap is light grey, so the
+  // recommended line is coloured by live congestion (Google's green/amber/red
+  // traffic overlay) and the alternative uses Google's route blue — both ride
+  // on a white casing so they stay visible against the grey tiles.
+  trafficClear: '#34A853', // green  — free-flowing
+  trafficModerate: '#FBBC04', // amber — some congestion
+  trafficHeavy: '#EA4335', // red   — heavy traffic
+  routeAlt: '#4285F4', // Google route blue — the alternate corridor
+  routeCasing: '#FFFFFF'
 };
 
 const theme = createTheme({
