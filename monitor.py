@@ -14,10 +14,11 @@ import datetime as dt
 import logging
 import os
 import sys
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final, Mapping, Sequence
+from typing import Any, Final, Mapping, Sequence, TypedDict
 
 import gspread
 import requests
@@ -73,6 +74,32 @@ ROUTES: Final[Sequence[Route]] = (
     Route(origin="MUSC", destination="Citadel Mall", region="Charleston, SC")
 )
 
+
+@dataclass(frozen=True, slots=True)
+class Corridor:
+    """A named highway option, pinned to a pass-through point on that road.
+
+    Google only volunteers an alternative route when it judges it competitive, so
+    off-peak it returns just the single fastest path. To track *both* corridors
+    every hour for the shuttle analysis we force each one with a ``via`` waypoint
+    that sits on that highway (coordinates verified against the live API in both
+    directions). The faster corridor at request time is flagged as recommended.
+    """
+
+    label: str
+    via_lat: float
+    via_lng: float
+
+    def to_waypoint(self) -> dict[str, object]:
+        """Routes API pass-through (non-stopover) intermediate waypoint."""
+        return {"via": True, "location": {"latLng": {"latitude": self.via_lat, "longitude": self.via_lng}}}
+
+
+CORRIDORS: Final[Sequence[Corridor]] = (
+    Corridor(label="US-17 (Savannah Hwy)", via_lat=32.78670, via_lng=-79.98890),
+    Corridor(label="SC-61 (Ashley River Rd)", via_lat=32.78066, via_lng=-79.97181),
+)
+
 # EXPECTED DATABASE SCHEMA DEFINITION
 EXPECTED_HEADERS: Final[Sequence[str]] = (
     "Timestamp",
@@ -89,6 +116,7 @@ EXPECTED_HEADERS: Final[Sequence[str]] = (
     "Delay (min)",
     "Status",
     "Route",
+    "Recommended",
     "Notes",
     "Polyline",
 )
@@ -103,7 +131,7 @@ WORKSHEET_NAME: Final[str] = os.getenv("WORKSHEET_NAME", "Log")
 ROUTES_API_URL: Final[str] = "https://routes.googleapis.com/directions/v2:computeRoutes"
 REQUEST_TIMEOUT: Final[tuple[float, float]] = (5.0, 15.0)  # (connect, read) seconds
 DEPARTURE_BUFFER_SEC: Final[int] = 60  # keep departureTime just ahead of "now"
-MAX_WORKERS: Final[int] = min(8, len(ROUTES)) or 1
+MAX_WORKERS: Final[int] = min(8, len(ROUTES) * len(CORRIDORS)) or 1
 METERS_TO_MILES: Final[float] = 0.000621371
 
 # Delay thresholds (minutes) used to classify congestion.
@@ -147,6 +175,7 @@ class TrafficSample:
     dest_lat: float
     dest_lng: float
     route_summary: str
+    recommended: bool
     notes: str
     polyline: str
 
@@ -167,6 +196,7 @@ class TrafficSample:
             self.delay_min,
             self.status.value,
             self.route_summary,
+            "Yes" if self.recommended else "No",
             self.notes,
             self.polyline,
         ]
@@ -221,25 +251,72 @@ def ensure_database_schema(sheet: gspread.Worksheet) -> None:
 
 
 # --- DATA EXTRACTION ---
-def build_note(status: TrafficStatus, delay_min: float) -> str:
+def build_note(status: TrafficStatus, delay_min: float, recommended: bool) -> str:
     """Human-readable summary of current conditions for the Notes column."""
+    prefix = "Recommended (fastest now). " if recommended else "Alternative. "
     if status is TrafficStatus.HEAVY:
-        return f"Heavy traffic — running {delay_min:.0f} min over the free-flow time."
+        return f"{prefix}Heavy traffic — running {delay_min:.0f} min over the free-flow time."
     if status is TrafficStatus.MODERATE:
-        return f"Moderate congestion — about {delay_min:.0f} min of added delay."
-    return "Free-flowing — at or near the free-flow time."
+        return f"{prefix}Moderate congestion — about {delay_min:.0f} min of added delay."
+    return f"{prefix}Free-flowing — at or near the free-flow time."
 
 
-def fetch_traffic_data(
-    session: requests.Session, route: Route, api_key: str, departure_time: str
-) -> TrafficSample:
-    """Query the official Google Maps Routes API (V1) for live data for a route.
+class RouteMetrics(TypedDict):
+    """Parsed metrics for a single Routes API path."""
+
+    distance_miles: float
+    normal_min: float
+    traffic_min: float
+    delay_min: float
+    origin_lat: float
+    origin_lng: float
+    dest_lat: float
+    dest_lng: float
+    polyline: str
+    route_summary: str
+
+
+def _parse_route(route: Route, route_data: dict[str, Any]) -> RouteMetrics:
+    """Extract the metrics we care about from a single Routes API alternative."""
+    distance_meters: float = float(route_data["distanceMeters"])
+    # staticDuration is the free-flow baseline; fall back to live duration if absent.
+    normal_seconds: float = float(route_data.get("staticDuration", route_data["duration"]).rstrip("s"))
+    traffic_seconds: float = float(route_data["duration"].rstrip("s"))
+
+    legs = route_data.get("legs") or [{}]
+    start = legs[0].get("startLocation", {}).get("latLng", {})
+    end = legs[-1].get("endLocation", {}).get("latLng", {})
+
+    traffic_min = round(traffic_seconds / 60, 1)
+    normal_min = round(normal_seconds / 60, 1)
+    return {
+        "distance_miles": round(distance_meters * METERS_TO_MILES, 2),
+        "normal_min": normal_min,
+        "traffic_min": traffic_min,
+        "delay_min": round(max(0.0, traffic_min - normal_min), 1),
+        "origin_lat": float(start.get("latitude", 0.0)),
+        "origin_lng": float(start.get("longitude", 0.0)),
+        "dest_lat": float(end.get("latitude", 0.0)),
+        "dest_lng": float(end.get("longitude", 0.0)),
+        "polyline": route_data.get("polyline", {}).get("encodedPolyline", ""),
+        "route_summary": route_data.get("description", "") or f"{route.origin} → {route.destination}",
+    }
+
+
+def fetch_corridor(
+    session: requests.Session,
+    route: Route,
+    corridor: Corridor,
+    api_key: str,
+    departure_time: str,
+) -> RouteMetrics:
+    """Query the Routes API for one direction forced onto one highway corridor.
 
     Uses ``TRAFFIC_AWARE_OPTIMAL`` with an explicit ``departureTime`` of *now* so
     Google returns the same high-precision, live-traffic estimate the Google Maps
-    app shows. The field mask also pulls the real geocoded endpoints and the
-    encoded route polyline so the dashboard can draw the actual driving path
-    instead of a straight line.
+    app shows, and a ``via`` waypoint to pin the route to this corridor's highway.
+    Returns the parsed metrics; the recommendation is decided once both corridors
+    for the direction are known.
     """
     headers = {
         "Content-Type": "application/json",
@@ -258,6 +335,7 @@ def fetch_traffic_data(
     payload = {
         "origin": LOCATIONS[route.origin].to_payload(),
         "destination": LOCATIONS[route.destination].to_payload(),
+        "intermediates": [corridor.to_waypoint()],
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
         "departureTime": departure_time,
@@ -270,68 +348,85 @@ def fetch_traffic_data(
     data = response.json()
 
     if "routes" not in data or not data["routes"]:
-        raise ValueError(f"No viable driving paths found between {route.origin} and {route.destination}")
+        raise ValueError(
+            f"No viable {corridor.label} path between {route.origin} and {route.destination}"
+        )
 
-    route_data = data["routes"][0]
+    metrics = _parse_route(route, data["routes"][0])
+    # Label the row by our forced corridor rather than Google's noisy description.
+    metrics["route_summary"] = corridor.label
+    return metrics
 
-    # Parse response format strings securely (e.g., "750s" -> integer seconds)
-    distance_meters: float = float(route_data["distanceMeters"])
-    normal_seconds: float = float(route_data["staticDuration"].rstrip("s"))
-    traffic_seconds: float = float(route_data["duration"].rstrip("s"))
 
-    distance_miles = round(distance_meters * METERS_TO_MILES, 2)
-    normal_min = round(normal_seconds / 60, 1)
-    traffic_min = round(traffic_seconds / 60, 1)
-    delay_min = round(max(0.0, traffic_min - normal_min), 1)
-    status = TrafficStatus.from_delay(delay_min)
-
-    # Read the real geocoded endpoints back from the response so map markers and
-    # the stored coordinates match exactly what Google resolved the address to.
-    legs = route_data.get("legs") or [{}]
-    start = legs[0].get("startLocation", {}).get("latLng", {})
-    end = legs[-1].get("endLocation", {}).get("latLng", {})
-    polyline = route_data.get("polyline", {}).get("encodedPolyline", "")
-    route_summary = route_data.get("description", "") or f"{route.origin} → {route.destination}"
-
+def build_sample(
+    route: Route, metrics: RouteMetrics, recommended: bool
+) -> TrafficSample:
+    """Assemble a TrafficSample from parsed metrics and the recommendation flag."""
+    status = TrafficStatus.from_delay(metrics["delay_min"])
     return TrafficSample(
         route=route,
-        distance_miles=distance_miles,
-        normal_min=normal_min,
-        traffic_min=traffic_min,
-        delay_min=delay_min,
+        distance_miles=metrics["distance_miles"],
+        normal_min=metrics["normal_min"],
+        traffic_min=metrics["traffic_min"],
+        delay_min=metrics["delay_min"],
         status=status,
-        origin_lat=float(start.get("latitude", 0.0)),
-        origin_lng=float(start.get("longitude", 0.0)),
-        dest_lat=float(end.get("latitude", 0.0)),
-        dest_lng=float(end.get("longitude", 0.0)),
-        route_summary=route_summary,
-        notes=build_note(status, delay_min),
-        polyline=polyline,
+        origin_lat=metrics["origin_lat"],
+        origin_lng=metrics["origin_lng"],
+        dest_lat=metrics["dest_lat"],
+        dest_lng=metrics["dest_lng"],
+        route_summary=metrics["route_summary"],
+        recommended=recommended,
+        notes=build_note(status, metrics["delay_min"], recommended),
+        polyline=metrics["polyline"],
     )
 
 
 def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
-    """Fetch every route concurrently, isolating per-route failures."""
-    samples: list[TrafficSample] = []
+    """Fetch every (direction, corridor) concurrently, isolating per-call failures.
+
+    Results are grouped per direction so the fastest corridor under current
+    traffic can be flagged as recommended; a failure on one corridor never aborts
+    the others.
+    """
+    metrics_by_route: dict[Route, list[RouteMetrics]] = defaultdict(list)
+
     with build_session() as session, ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
-            pool.submit(fetch_traffic_data, session, route, api_key, departure_time): route
+            pool.submit(fetch_corridor, session, route, corridor, api_key, departure_time): (
+                route,
+                corridor,
+            )
             for route in ROUTES
+            for corridor in CORRIDORS
         }
         for future in as_completed(futures):
-            route = futures[future]
+            route, corridor = futures[future]
             try:
-                sample = future.result()
-            except Exception as exc:  # noqa: BLE001 - isolate one route from the rest.
-                logger.error("Failed to fetch %s -> %s: %s", route.origin, route.destination, exc)
-                continue
+                metrics_by_route[route].append(future.result())
+            except Exception as exc:  # noqa: BLE001 - isolate one corridor from the rest.
+                logger.error(
+                    "Failed to fetch %s -> %s via %s: %s",
+                    route.origin,
+                    route.destination,
+                    corridor.label,
+                    exc,
+                )
+
+    samples: list[TrafficSample] = []
+    for route, metrics_list in metrics_by_route.items():
+        # The recommended corridor for this direction is the fastest right now.
+        fastest = min(metrics_list, key=lambda m: m["traffic_min"])
+        for metrics in metrics_list:
+            sample = build_sample(route, metrics, recommended=metrics is fastest)
             logger.info(
-                "%s -> %s: %.1f min (%.1f min delay, %s)",
+                "%s -> %s via %s: %.1f min (%.1f min delay, %s)%s",
                 route.origin,
                 route.destination,
+                sample.route_summary,
                 sample.traffic_min,
                 sample.delay_min,
                 sample.status.value,
+                " [recommended]" if sample.recommended else "",
             )
             samples.append(sample)
     return samples
