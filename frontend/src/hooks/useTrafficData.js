@@ -43,6 +43,7 @@ export default function useTrafficData(query = '') {
           delay: toNumber(row.delay),
           status: row.status || 'Normal',
           route: row.route || '',
+          recommended: Boolean(row.recommended),
           notes: row.notes || '',
           polyline: row.polyline || ''
         }))
