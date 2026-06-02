@@ -15,6 +15,7 @@ const HEADER_MAP = {
   'delay (min)': 'delay',
   'status': 'status',
   'route': 'route',
+  'recommended': 'recommended',
   'notes': 'notes',
   'polyline': 'polyline'
 };
@@ -104,7 +105,7 @@ export default async function handler(req, res) {
     });
 
     const sheets = google.sheets({ version: 'v4', auth });
-    const range = `${worksheetName}!A1:P`;
+    const range = `${worksheetName}!A1:Q`;
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range
@@ -141,6 +142,7 @@ export default async function handler(req, res) {
       delay: toNumber(row[headerIndex.delay]),
       status: row[headerIndex.status] || 'Normal',
       route: row[headerIndex.route] || '',
+      recommended: /^(yes|true|1)$/i.test(String(row[headerIndex.recommended] || '').trim()),
       notes: row[headerIndex.notes] || '',
       polyline: row[headerIndex.polyline] || ''
     }));
