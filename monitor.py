@@ -110,22 +110,43 @@ class Corridor:
         return [point.to_waypoint() for point in self.via_points]
 
 
-# Via points sit on the monitored highway corridors. We keep one interior pin per
-# corridor to avoid forcing detours, then reject known local shortcut roads from
-# the returned route instructions.
+# Via points sit on the monitored highway corridors. A single interior pin was
+# too loose for West Ashley -> MUSC and Google could still satisfy it with a
+# south-side shortcut onto James Island Expressway. These ordered pins keep each
+# sample on the named corridor, then the blocked-road guard rejects any leaked
+# shortcut before it is logged.
+EXPRESSWAY_SHORTCUTS: Final[Sequence[str]] = (
+    "James Island Expressway",
+    "James Island Expy",
+    "SC 30",
+    "SC-30",
+    "State Hwy 30",
+    "Meaders",
+    "Meader",
+)
+
 CORRIDORS: Final[Sequence[Corridor]] = (
     Corridor(
         label="Route 17",
         via_points=(
+            LatLng(32.79455, -80.02554),
             LatLng(32.78647, -80.01123),
+            LatLng(32.78191, -79.96785),
         ),
+        blocked_road_names=EXPRESSWAY_SHORTCUTS,
     ),
     Corridor(
         label="Route 61",
         via_points=(
+            LatLng(32.80985, -80.03327),
+            LatLng(32.80139, -80.01462),
             LatLng(32.79073, -79.98681),
         ),
-        blocked_road_names=("Ashley Point Drive", "Ashley Point Dr"),
+        blocked_road_names=(
+            *EXPRESSWAY_SHORTCUTS,
+            "Ashley Point Drive",
+            "Ashley Point Dr",
+        ),
     ),
 )
 
