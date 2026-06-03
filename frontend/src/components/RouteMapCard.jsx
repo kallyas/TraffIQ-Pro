@@ -30,6 +30,23 @@ function endpointIcon(fill) {
   });
 }
 
+// Hover card shown when the cursor is over a route line.
+function lineTooltip(record, role) {
+  const sev = getSeverity(record.delay);
+  const sevColor = sev === 'moderate' ? '#B06000' : SEVERITY_STYLE[sev].color;
+  const dist =
+    Number.isFinite(record.distance) && record.distance > 0
+      ? `<div style="color:#6B7280">${record.distance.toFixed(1)} mi</div>`
+      : '';
+  return `
+    <div style="font-weight:700">${record.route || role}</div>
+    <div style="color:#6B7280;font-size:11px;margin-bottom:3px">${role}</div>
+    <div><b>${record.live.toFixed(0)} min</b> live · ${record.base.toFixed(0)} min free-flow</div>
+    <div style="color:${sevColor};font-weight:600">${getSeverityLabel(sev)} · +${record.delay.toFixed(0)} min</div>
+    ${dist}
+  `;
+}
+
 function pathFor(record) {
   if (!record) return [];
   const decoded = decodePolyline(record.polyline);
@@ -65,7 +82,7 @@ export default function RouteMapCard({ records }) {
 
     // Alternative corridor (Google route-blue, dashed) sits beneath the
     // recommended route. Its own white casing keeps it readable on the grey map.
-    altCasingRef.current = L.polyline([], { color: colors.routeCasing, weight: 9, opacity: 0.9 }).addTo(map);
+    altCasingRef.current = L.polyline([], { color: colors.routeCasing, weight: 9, opacity: 0.9, interactive: false }).addTo(map);
     altLineRef.current = L.polyline([], {
       color: colors.routeAlt,
       weight: 5,
@@ -74,7 +91,7 @@ export default function RouteMapCard({ records }) {
       lineCap: 'round',
       lineJoin: 'round'
     }).addTo(map);
-    casingRef.current = L.polyline([], { color: colors.routeCasing, weight: 10, opacity: 0.9 }).addTo(map);
+    casingRef.current = L.polyline([], { color: colors.routeCasing, weight: 10, opacity: 0.9, interactive: false }).addTo(map);
     routeLineRef.current = L.polyline([], {
       color: colors.calm,
       weight: 5,
@@ -117,6 +134,15 @@ export default function RouteMapCard({ records }) {
     const altPoints = alternativePath.length >= 2 ? alternativePath : [];
     altLine.setLatLngs(altPoints);
     altCasing.setLatLngs(altPoints);
+
+    // Hover tooltips follow the cursor along each line (sticky).
+    const tipOpts = { sticky: true, direction: 'top', opacity: 0.97, className: 'traffiq-route-tip' };
+    routeLine.bindTooltip(lineTooltip(comparison.recommended, 'Recommended'), tipOpts);
+    if (altPoints.length >= 2 && comparison.alternative) {
+      altLine.bindTooltip(lineTooltip(comparison.alternative, 'Alternative'), tipOpts);
+    } else {
+      altLine.unbindTooltip();
+    }
 
     const origin = recommendedPath[0];
     const dest = recommendedPath[recommendedPath.length - 1];
@@ -172,7 +198,7 @@ export default function RouteMapCard({ records }) {
                 zIndex: 500,
                 p: 1.25,
                 maxWidth: 220,
-                borderRadius: 2,
+                borderRadius: 0.5,
                 bgcolor: 'rgba(255,255,255,0.94)',
                 border: `1px solid ${colors.border}`,
                 boxShadow: '0 6px 20px rgba(15,23,42,0.12)',
