@@ -35,28 +35,42 @@ logger = logging.getLogger("traffiq")
 
 # --- TYPE DEFINITIONS FOR GEO ---
 @dataclass(frozen=True, slots=True)
+class LatLng:
+    """A coordinate used for route endpoints and pass-through locks."""
+
+    lat: float
+    lng: float
+
+    def to_payload(self) -> dict[str, object]:
+        """Routes API waypoint format using explicit coordinates."""
+        return {
+            "location": {"latLng": {"latitude": self.lat, "longitude": self.lng}},
+        }
+
+    def to_waypoint(self) -> dict[str, object]:
+        """Routes API pass-through (non-stopover) intermediate waypoint."""
+        return {
+            "via": True,
+            **self.to_payload(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Place:
-    """A named waypoint addressed by its street address.
+    """A named waypoint pinned to the Google Maps coordinate provided."""
 
-    We send the *address string* to the Routes API rather than a hand-picked
-    lat/lng so Google geocodes the exact same point the Google Maps app would.
-    Hard-coded coordinates silently snap to the nearest road segment, which was
-    producing a shorter corridor (and therefore under-reported drive times).
-    The real geocoded coordinates are read back from the API response.
-    """
+    lat_lng: LatLng
 
-    address: str
-
-    def to_payload(self) -> dict[str, str]:
-        """Routes API waypoint format using server-side geocoding."""
-        return {"address": self.address}
+    def to_payload(self) -> dict[str, object]:
+        """Routes API waypoint format."""
+        return self.lat_lng.to_payload()
 
 
 # --- CONFIGURATION ---
-# Addresses are geocoded by Google exactly as the client specified them.
+# Coordinates come from the Google Maps route examples provided for this shuttle.
 LOCATIONS: Final[Mapping[str, Place]] = {
-    "Citadel Mall": Place(address="2070 Sam Rittenberg Blvd, Charleston, SC 29407"),
-    "MUSC": Place(address="171 Ashley Ave, Charleston, SC 29425"),
+    "Citadel Mall": Place(lat_lng=LatLng(32.798342, -80.031711)),
+    "MUSC": Place(lat_lng=LatLng(32.785222, -79.947400)),
 }
 
 
@@ -76,29 +90,13 @@ ROUTES: Final[Sequence[Route]] = (
 
 
 @dataclass(frozen=True, slots=True)
-class LatLng:
-    """A pass-through point on the road being monitored."""
-
-    lat: float
-    lng: float
-
-    def to_waypoint(self) -> dict[str, object]:
-        """Routes API pass-through (non-stopover) intermediate waypoint."""
-        return {
-            "via": True,
-            "location": {"latLng": {"latitude": self.lat, "longitude": self.lng}},
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class Corridor:
     """A named highway option, pinned to a pass-through point on that road.
 
-    Google only volunteers an alternative route when it judges it competitive, so
-    off-peak it returns just the single fastest path. To track *both* corridors
-    every hour for the shuttle analysis we force each one with a ``via`` waypoint
-    that sits on that highway. Shortcuts can still appear at the corridor edges,
-    so configured blocked road names are rejected before a sample is logged.
+    Google only volunteers routes it judges competitive, so we force the
+    monitored shuttle path with ``via`` waypoints that sit on the required roads.
+    Shortcuts can still appear at the corridor edges, so configured blocked road
+    names are rejected before a sample is logged.
     """
 
     label: str
@@ -110,12 +108,11 @@ class Corridor:
         return [point.to_waypoint() for point in self.via_points]
 
 
-# Via points sit on the monitored highway corridors. A single interior pin was
-# too loose for West Ashley -> MUSC and Google could still satisfy it with a
-# south-side shortcut onto James Island Expressway. These ordered pins keep each
-# sample on the named corridor, then the blocked-road guard rejects any leaked
-# shortcut before it is logged.
-EXPRESSWAY_SHORTCUTS: Final[Sequence[str]] = (
+# Via points are direction-specific locks from the Google Maps route examples.
+# Each direction records both monitored corridors: Route 17/Savannah Hwy and
+# Route 61/St Andrews Blvd. The blocked-road guard rejects the James Island
+# Expressway/Meaders shortcut if Google leaks it into the returned directions.
+BLOCKED_CORRIDOR_ROADS: Final[Sequence[str]] = (
     "James Island Expressway",
     "James Island Expy",
     "SC 30",
@@ -125,30 +122,52 @@ EXPRESSWAY_SHORTCUTS: Final[Sequence[str]] = (
     "Meader",
 )
 
-CORRIDORS: Final[Sequence[Corridor]] = (
-    Corridor(
-        label="Route 17",
-        via_points=(
-            LatLng(32.79455, -80.02554),
-            LatLng(32.78647, -80.01123),
-            LatLng(32.78191, -79.96785),
+ROUTE_CORRIDORS: Final[Mapping[Route, Sequence[Corridor]]] = {
+    ROUTES[0]: (
+        Corridor(
+            label="Route 17",
+            via_points=(
+                # US-17/Savannah Hwy west of the Ashley River Bridge.
+                LatLng(32.786912, -79.972322),
+                # Spring St / Cannon St off-ramp after the Ashley River Bridge.
+                LatLng(32.788550, -79.954714),
+            ),
+            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
         ),
-        blocked_road_names=EXPRESSWAY_SHORTCUTS,
+        Corridor(
+            label="Route 61",
+            via_points=(
+                # SC-61 near St Andrews Blvd.
+                LatLng(32.800531, -79.985934),
+                # Spring St / Cannon St off-ramp after the Ashley River Bridge.
+                LatLng(32.788550, -79.954714),
+            ),
+            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
+        ),
     ),
-    Corridor(
-        label="Route 61",
-        via_points=(
-            LatLng(32.80985, -80.03327),
-            LatLng(32.80139, -80.01462),
-            LatLng(32.79073, -79.98681),
+    ROUTES[1]: (
+        Corridor(
+            label="Route 17",
+            via_points=(
+                # US-17 S / Savannah Hwy just past the bridge.
+                LatLng(32.786912, -79.972322),
+                # US-17/Savannah Hwy west of the Ashley River Bridge.
+                LatLng(32.78647, -80.01123),
+            ),
+            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
         ),
-        blocked_road_names=(
-            *EXPRESSWAY_SHORTCUTS,
-            "Ashley Point Drive",
-            "Ashley Point Dr",
+        Corridor(
+            label="Route 61",
+            via_points=(
+                # US-17 S / Savannah Hwy just past the bridge.
+                LatLng(32.786912, -79.972322),
+                # SC-61 N / St Andrews Blvd branch back northwest.
+                LatLng(32.802114, -79.988220),
+            ),
+            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
         ),
     ),
-)
+}
 
 # EXPECTED DATABASE SCHEMA DEFINITION
 EXPECTED_HEADERS: Final[Sequence[str]] = (
@@ -181,7 +200,7 @@ WORKSHEET_NAME: Final[str] = os.getenv("WORKSHEET_NAME", "Log")
 ROUTES_API_URL: Final[str] = "https://routes.googleapis.com/directions/v2:computeRoutes"
 REQUEST_TIMEOUT: Final[tuple[float, float]] = (5.0, 15.0)  # (connect, read) seconds
 DEPARTURE_BUFFER_SEC: Final[int] = 60  # keep departureTime just ahead of "now"
-MAX_WORKERS: Final[int] = min(8, len(ROUTES) * len(CORRIDORS)) or 1
+MAX_WORKERS: Final[int] = min(8, sum(len(corridors) for corridors in ROUTE_CORRIDORS.values())) or 1
 METERS_TO_MILES: Final[float] = 0.000621371
 
 # Delay thresholds (minutes) used to classify congestion.
@@ -327,7 +346,7 @@ class RouteMetrics(TypedDict):
 
 
 def _parse_route(route: Route, route_data: dict[str, Any]) -> RouteMetrics:
-    """Extract the metrics we care about from a single Routes API alternative."""
+    """Extract the metrics we care about from a single Routes API path."""
     distance_meters: float = float(route_data["distanceMeters"])
     # staticDuration is the free-flow baseline; fall back to live duration if absent.
     normal_seconds: float = float(route_data.get("staticDuration", route_data["duration"]).rstrip("s"))
@@ -387,13 +406,11 @@ def fetch_corridor(
     api_key: str,
     departure_time: str,
 ) -> RouteMetrics:
-    """Query the Routes API for one direction forced onto one highway corridor.
+    """Query the Routes API for one direction forced onto the allowed corridor.
 
     Uses ``TRAFFIC_AWARE_OPTIMAL`` with an explicit ``departureTime`` of *now* so
     Google returns the same high-precision, live-traffic estimate the Google Maps
-    app shows, and a ``via`` waypoint to pin the route to this corridor's highway.
-    Returns the parsed metrics; the recommendation is decided once both corridors
-    for the direction are known.
+    app shows, and ``via`` waypoints to pin the route to the required roads.
     """
     headers = {
         "Content-Type": "application/json",
@@ -469,11 +486,10 @@ def build_sample(
 
 
 def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
-    """Fetch every (direction, corridor) concurrently, isolating per-call failures.
+    """Fetch every monitored direction/corridor, isolating per-call failures.
 
-    Results are grouped per direction so the fastest corridor under current
-    traffic can be flagged as recommended; a failure on one corridor never aborts
-    the others.
+    Results are grouped per direction so the fastest monitored corridor can be
+    flagged as recommended; a failure on one corridor never aborts the others.
     """
     metrics_by_route: dict[Route, list[RouteMetrics]] = defaultdict(list)
 
@@ -483,8 +499,8 @@ def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
                 route,
                 corridor,
             )
-            for route in ROUTES
-            for corridor in CORRIDORS
+            for route, corridors in ROUTE_CORRIDORS.items()
+            for corridor in corridors
         }
         for future in as_completed(futures):
             route, corridor = futures[future]
