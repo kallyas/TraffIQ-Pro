@@ -166,7 +166,7 @@ export default function RouteMapCard({ records }) {
           <Box>
             <Typography variant="subtitle1">Recommended Route</Typography>
             <Typography variant="body2" color="text.secondary">
-              Fastest corridor right now, with the alternate highway shown dashed.
+              Live drive time on the required Savannah Highway / St Andrews Boulevard corridor.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>

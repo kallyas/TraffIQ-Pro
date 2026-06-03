@@ -94,11 +94,10 @@ class LatLng:
 class Corridor:
     """A named highway option, pinned to a pass-through point on that road.
 
-    Google only volunteers an alternative route when it judges it competitive, so
-    off-peak it returns just the single fastest path. To track *both* corridors
-    every hour for the shuttle analysis we force each one with a ``via`` waypoint
-    that sits on that highway. Shortcuts can still appear at the corridor edges,
-    so configured blocked road names are rejected before a sample is logged.
+    Google only volunteers routes it judges competitive, so we force the
+    monitored shuttle path with ``via`` waypoints that sit on the required roads.
+    Shortcuts can still appear at the corridor edges, so configured blocked road
+    names are rejected before a sample is logged.
     """
 
     label: str
@@ -110,12 +109,11 @@ class Corridor:
         return [point.to_waypoint() for point in self.via_points]
 
 
-# Via points sit on the monitored highway corridors. A single interior pin was
-# too loose for West Ashley -> MUSC and Google could still satisfy it with a
-# south-side shortcut onto James Island Expressway. These ordered pins keep each
-# sample on the named corridor, then the blocked-road guard rejects any leaked
-# shortcut before it is logged.
-EXPRESSWAY_SHORTCUTS: Final[Sequence[str]] = (
+# Via points sit on Savannah Highway and St Andrews Boulevard, the only allowed
+# corridor for the Citadel Mall <-> MUSC shuttle. The blocked-road guard rejects
+# the James Island Expressway/Meaders shortcut and the old SC-61 alternative if
+# Google leaks either into the returned directions.
+BLOCKED_CORRIDOR_ROADS: Final[Sequence[str]] = (
     "James Island Expressway",
     "James Island Expy",
     "SC 30",
@@ -123,30 +121,22 @@ EXPRESSWAY_SHORTCUTS: Final[Sequence[str]] = (
     "State Hwy 30",
     "Meaders",
     "Meader",
+    "Ashley River Road",
+    "Ashley River Rd",
+    "SC 61",
+    "SC-61",
+    "State Hwy 61",
 )
 
 CORRIDORS: Final[Sequence[Corridor]] = (
     Corridor(
-        label="Route 17",
+        label="Savannah Hwy / St Andrews Blvd",
         via_points=(
             LatLng(32.79455, -80.02554),
             LatLng(32.78647, -80.01123),
             LatLng(32.78191, -79.96785),
         ),
-        blocked_road_names=EXPRESSWAY_SHORTCUTS,
-    ),
-    Corridor(
-        label="Route 61",
-        via_points=(
-            LatLng(32.80985, -80.03327),
-            LatLng(32.80139, -80.01462),
-            LatLng(32.79073, -79.98681),
-        ),
-        blocked_road_names=(
-            *EXPRESSWAY_SHORTCUTS,
-            "Ashley Point Drive",
-            "Ashley Point Dr",
-        ),
+        blocked_road_names=BLOCKED_CORRIDOR_ROADS,
     ),
 )
 
@@ -327,7 +317,7 @@ class RouteMetrics(TypedDict):
 
 
 def _parse_route(route: Route, route_data: dict[str, Any]) -> RouteMetrics:
-    """Extract the metrics we care about from a single Routes API alternative."""
+    """Extract the metrics we care about from a single Routes API path."""
     distance_meters: float = float(route_data["distanceMeters"])
     # staticDuration is the free-flow baseline; fall back to live duration if absent.
     normal_seconds: float = float(route_data.get("staticDuration", route_data["duration"]).rstrip("s"))
@@ -387,13 +377,11 @@ def fetch_corridor(
     api_key: str,
     departure_time: str,
 ) -> RouteMetrics:
-    """Query the Routes API for one direction forced onto one highway corridor.
+    """Query the Routes API for one direction forced onto the allowed corridor.
 
     Uses ``TRAFFIC_AWARE_OPTIMAL`` with an explicit ``departureTime`` of *now* so
     Google returns the same high-precision, live-traffic estimate the Google Maps
-    app shows, and a ``via`` waypoint to pin the route to this corridor's highway.
-    Returns the parsed metrics; the recommendation is decided once both corridors
-    for the direction are known.
+    app shows, and ``via`` waypoints to pin the route to the required roads.
     """
     headers = {
         "Content-Type": "application/json",
@@ -469,11 +457,10 @@ def build_sample(
 
 
 def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
-    """Fetch every (direction, corridor) concurrently, isolating per-call failures.
+    """Fetch every monitored direction/corridor, isolating per-call failures.
 
-    Results are grouped per direction so the fastest corridor under current
-    traffic can be flagged as recommended; a failure on one corridor never aborts
-    the others.
+    Results are grouped per direction so the monitored path can be flagged as
+    recommended; a failure on one direction never aborts the others.
     """
     metrics_by_route: dict[Route, list[RouteMetrics]] = defaultdict(list)
 
@@ -509,7 +496,7 @@ def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
             )
             continue
 
-        # The recommended corridor for this direction is the fastest right now.
+        # With a single allowed corridor, this marks the viable monitored path.
         fastest = min(metrics_list, key=lambda m: m["traffic_min"])
         for metrics in metrics_list:
             sample = build_sample(route, metrics, recommended=metrics is fastest)
