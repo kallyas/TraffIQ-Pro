@@ -1,16 +1,17 @@
-import React, { useMemo, useState } from 'react';
-import { Box, Container, Grid } from '@mui/material';
+import React, { Suspense, lazy, useMemo, useState } from 'react';
+import { Box, Container, Grid, Paper, Skeleton } from '@mui/material';
 
-import AuditTableCard from './components/AuditTableCard.jsx';
 import FiltersPanel from './components/FiltersPanel.jsx';
 import HeaderBar from './components/HeaderBar.jsx';
-import HeatmapCard from './components/HeatmapCard.jsx';
 import KpiGrid from './components/KpiGrid.jsx';
-import RouteMapCard from './components/RouteMapCard.jsx';
-import TimeSeriesCard from './components/TimeSeriesCard.jsx';
 import useTrafficData from './hooks/useTrafficData.js';
 import { colors } from './theme.js';
 import { buildTrafficQuery, computeKpis, filterRecords } from './utils/traffic.js';
+
+const AuditTableCard = lazy(() => import('./components/AuditTableCard.jsx'));
+const HeatmapCard = lazy(() => import('./components/HeatmapCard.jsx'));
+const RouteMapCard = lazy(() => import('./components/RouteMapCard.jsx'));
+const TimeSeriesCard = lazy(() => import('./components/TimeSeriesCard.jsx'));
 
 const defaultFilters = {
   region: 'all',
@@ -21,6 +22,16 @@ const defaultFilters = {
   dateTo: '',
   search: ''
 };
+
+function PanelSkeleton({ height = 320, mt = 0 }) {
+  return (
+    <Paper sx={{ p: 3, mt, height: '100%' }}>
+      <Skeleton variant="text" width={180} height={24} />
+      <Skeleton variant="text" width="55%" height={20} />
+      <Skeleton variant="rounded" height={height} sx={{ mt: 2 }} />
+    </Paper>
+  );
+}
 
 export default function App() {
   const [filters, setFilters] = useState(defaultFilters);
@@ -91,16 +102,24 @@ export default function App() {
 
         <Grid container spacing={3}>
           <Grid item xs={12} lg={7}>
-            <TimeSeriesCard records={recommendedRecords} />
+            <Suspense fallback={<PanelSkeleton />}>
+              <TimeSeriesCard records={recommendedRecords} />
+            </Suspense>
           </Grid>
           <Grid item xs={12} lg={5}>
-            <RouteMapCard records={filteredRecords} />
+            <Suspense fallback={<PanelSkeleton height={440} />}>
+              <RouteMapCard records={filteredRecords} />
+            </Suspense>
           </Grid>
         </Grid>
 
-        <HeatmapCard records={recommendedRecords} />
+        <Suspense fallback={<PanelSkeleton height={180} mt={3} />}>
+          <HeatmapCard records={recommendedRecords} />
+        </Suspense>
 
-        <AuditTableCard records={filteredRecords} totalCount={records.length} />
+        <Suspense fallback={<PanelSkeleton height={360} mt={4} />}>
+          <AuditTableCard records={filteredRecords} totalCount={records.length} />
+        </Suspense>
       </Container>
     </Box>
   );

@@ -1,12 +1,33 @@
-import React, { useEffect, useMemo, useRef } from 'react';
-import { Box, Chip, Paper, Stack, Typography } from '@mui/material';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Box, Chip, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 import { colors } from '../theme.js';
 import { decodePolyline } from '../utils/format.js';
 import { getLatestComparison, getSeverity, getSeverityLabel } from '../utils/traffic.js';
 
 const MAP_CENTER = [32.7886, -79.9835];
+
+const BASE_MAPS = {
+  osm: {
+    label: 'OpenStreetMap',
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    options: {
+      attribution: '© OpenStreetMap contributors © CARTO',
+      maxZoom: 19
+    }
+  },
+  google: {
+    label: 'Google Maps',
+    url: 'https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+    options: {
+      attribution: 'Map data © Google',
+      maxZoom: 20,
+      subdomains: ['mt0', 'mt1', 'mt2', 'mt3']
+    }
+  }
+};
 
 const SEVERITY_STYLE = {
   heavy: { color: colors.trafficHeavy, weight: 8 },
@@ -61,8 +82,10 @@ function pathFor(record) {
 }
 
 export default function RouteMapCard({ records }) {
+  const [baseMap, setBaseMap] = useState('osm');
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
+  const tileLayerRef = useRef(null);
   const altLineRef = useRef(null);
   const altCasingRef = useRef(null);
   const routeLineRef = useRef(null);
@@ -74,10 +97,6 @@ export default function RouteMapCard({ records }) {
     if (!mapRef.current || mapInstance.current) return;
 
     const map = L.map(mapRef.current, { zoomControl: false }).setView(MAP_CENTER, 12);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '© OpenStreetMap CARTO',
-      maxZoom: 19
-    }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
     // Alternative corridor (Google route-blue, dashed) sits beneath the
@@ -104,6 +123,19 @@ export default function RouteMapCard({ records }) {
 
     mapInstance.current = map;
   }, []);
+
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map) return;
+
+    const provider = BASE_MAPS[baseMap];
+    const nextLayer = L.tileLayer(provider.url, provider.options);
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current);
+    }
+    tileLayerRef.current = nextLayer;
+    nextLayer.addTo(map);
+  }, [baseMap]);
 
   const comparison = useMemo(() => getLatestComparison(records), [records]);
 
@@ -159,6 +191,10 @@ export default function RouteMapCard({ records }) {
   const rec = comparison?.recommended;
   const severity = rec ? getSeverity(rec.delay) : 'normal';
 
+  const handleBaseMapChange = (_event, nextBaseMap) => {
+    if (nextBaseMap) setBaseMap(nextBaseMap);
+  };
+
   return (
     <Paper sx={{ p: 3, height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Stack spacing={2} sx={{ flexGrow: 1 }}>
@@ -166,7 +202,7 @@ export default function RouteMapCard({ records }) {
           <Box>
             <Typography variant="subtitle1">Recommended Route</Typography>
             <Typography variant="body2" color="text.secondary">
-              Live drive time on the required Savannah Highway / St Andrews Boulevard corridor.
+              Live drive time comparing Route 17 and Route 61 in both directions.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
@@ -177,6 +213,45 @@ export default function RouteMapCard({ records }) {
         </Stack>
 
         <Box sx={{ position: 'relative', flexGrow: 1 }}>
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={baseMap}
+            onChange={handleBaseMapChange}
+            aria-label="Map provider"
+            sx={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              zIndex: 500,
+              bgcolor: 'rgba(255,255,255,0.96)',
+              border: `1px solid ${colors.border}`,
+              boxShadow: '0 6px 20px rgba(15,23,42,0.12)',
+              '& .MuiToggleButton-root': {
+                px: 1.1,
+                py: 0.45,
+                border: 0,
+                fontSize: 11,
+                fontWeight: 700,
+                textTransform: 'none',
+                color: colors.muted,
+                '&.Mui-selected': {
+                  bgcolor: colors.slate,
+                  color: '#fff',
+                  '&:hover': {
+                    bgcolor: colors.slate
+                  }
+                }
+              }
+            }}
+          >
+            {Object.entries(BASE_MAPS).map(([key, provider]) => (
+              <ToggleButton key={key} value={key} aria-label={provider.label}>
+                {provider.label}
+              </ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+
           <Box
             ref={mapRef}
             sx={{
