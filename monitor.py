@@ -76,32 +76,57 @@ ROUTES: Final[Sequence[Route]] = (
 
 
 @dataclass(frozen=True, slots=True)
+class LatLng:
+    """A pass-through point on the road being monitored."""
+
+    lat: float
+    lng: float
+
+    def to_waypoint(self) -> dict[str, object]:
+        """Routes API pass-through (non-stopover) intermediate waypoint."""
+        return {
+            "via": True,
+            "location": {"latLng": {"latitude": self.lat, "longitude": self.lng}},
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Corridor:
     """A named highway option, pinned to a pass-through point on that road.
 
     Google only volunteers an alternative route when it judges it competitive, so
     off-peak it returns just the single fastest path. To track *both* corridors
     every hour for the shuttle analysis we force each one with a ``via`` waypoint
-    that sits on that highway (coordinates verified against the live API in both
-    directions). The faster corridor at request time is flagged as recommended.
+    that sits on that highway. Shortcuts can still appear at the corridor edges,
+    so configured blocked road names are rejected before a sample is logged.
     """
 
     label: str
-    via_lat: float
-    via_lng: float
+    via_points: Sequence[LatLng]
+    blocked_road_names: Sequence[str] = ()
 
-    def to_waypoint(self) -> dict[str, object]:
-        """Routes API pass-through (non-stopover) intermediate waypoint."""
-        return {"via": True, "location": {"latLng": {"latitude": self.via_lat, "longitude": self.via_lng}}}
+    def to_waypoints(self) -> list[dict[str, object]]:
+        """Routes API pass-through waypoint list."""
+        return [point.to_waypoint() for point in self.via_points]
 
 
-# via points lifted from the interior of each corridor's own Google route
-# geometry, so the path passes through cleanly with no detours or U-turns.
-# (The previous pins sat just off the carriageway, forcing restricted-road
-# loops that inflated both time and distance by ~0.7 mi.)
+# Via points sit on the monitored highway corridors. We keep one interior pin per
+# corridor to avoid forcing detours, then reject known local shortcut roads from
+# the returned route instructions.
 CORRIDORS: Final[Sequence[Corridor]] = (
-    Corridor(label="US-17 (Savannah Hwy)", via_lat=32.78647, via_lng=-80.01123),
-    Corridor(label="SC-61 (Ashley River Rd)", via_lat=32.79073, via_lng=-79.98681),
+    Corridor(
+        label="Route 17",
+        via_points=(
+            LatLng(32.78647, -80.01123),
+        ),
+    ),
+    Corridor(
+        label="Route 61",
+        via_points=(
+            LatLng(32.79073, -79.98681),
+        ),
+        blocked_road_names=("Ashley Point Drive", "Ashley Point Dr"),
+    ),
 )
 
 # EXPECTED DATABASE SCHEMA DEFINITION
@@ -307,6 +332,33 @@ def _parse_route(route: Route, route_data: dict[str, Any]) -> RouteMetrics:
     }
 
 
+def _route_text(route_data: dict[str, Any]) -> str:
+    """Flatten human-readable route text used to detect shortcut roads."""
+    text: list[str] = []
+    description = route_data.get("description")
+    if isinstance(description, str):
+        text.append(description)
+
+    for leg in route_data.get("legs") or []:
+        for step in leg.get("steps") or []:
+            instruction = step.get("navigationInstruction", {})
+            if isinstance(instruction, dict):
+                instructions = instruction.get("instructions")
+                if isinstance(instructions, str):
+                    text.append(instructions)
+
+    return " ".join(text).lower()
+
+
+def _uses_blocked_road(route_data: dict[str, Any], corridor: Corridor) -> str | None:
+    """Return the blocked road name found in the API route, if any."""
+    route_text = _route_text(route_data)
+    for road_name in corridor.blocked_road_names:
+        if road_name.lower() in route_text:
+            return road_name
+    return None
+
+
 def fetch_corridor(
     session: requests.Session,
     route: Route,
@@ -332,14 +384,15 @@ def fetch_corridor(
             "routes.description,"
             "routes.polyline.encodedPolyline,"
             "routes.legs.startLocation.latLng,"
-            "routes.legs.endLocation.latLng"
+            "routes.legs.endLocation.latLng,"
+            "routes.legs.steps.navigationInstruction.instructions"
         ),
     }
 
     payload = {
         "origin": LOCATIONS[route.origin].to_payload(),
         "destination": LOCATIONS[route.destination].to_payload(),
-        "intermediates": [corridor.to_waypoint()],
+        "intermediates": corridor.to_waypoints(),
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
         "departureTime": departure_time,
@@ -347,7 +400,9 @@ def fetch_corridor(
         "units": "IMPERIAL",
     }
 
-    response = session.post(ROUTES_API_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+    response = session.post(
+        ROUTES_API_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
+    )
     response.raise_for_status()
     data = response.json()
 
@@ -356,7 +411,14 @@ def fetch_corridor(
             f"No viable {corridor.label} path between {route.origin} and {route.destination}"
         )
 
-    metrics = _parse_route(route, data["routes"][0])
+    route_data = data["routes"][0]
+    blocked_road = _uses_blocked_road(route_data, corridor)
+    if blocked_road:
+        raise ValueError(
+            f"{corridor.label} path used blocked shortcut road: {blocked_road}"
+        )
+
+    metrics = _parse_route(route, route_data)
     # Label the row by our forced corridor rather than Google's noisy description.
     metrics["route_summary"] = corridor.label
     return metrics
@@ -418,6 +480,14 @@ def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
 
     samples: list[TrafficSample] = []
     for route, metrics_list in metrics_by_route.items():
+        if not metrics_list:
+            logger.error(
+                "No viable monitored corridors for %s -> %s",
+                route.origin,
+                route.destination,
+            )
+            continue
+
         # The recommended corridor for this direction is the fastest right now.
         fastest = min(metrics_list, key=lambda m: m["traffic_min"])
         for metrics in metrics_list:

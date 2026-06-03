@@ -39,6 +39,13 @@ function parseRowDate(timestamp) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function normalizeRouteLabel(route) {
+  const value = String(route || '').trim();
+  if (/^(sc-?61|route 61)/i.test(value)) return 'Route 61';
+  if (/^(us-?17|route 17)/i.test(value)) return 'Route 17';
+  return value;
+}
+
 /**
  * Restrict rows by a rolling window (`days`) or an explicit `from`/`to` range.
  * `from`/`to` take precedence when present. Invalid/absent params return all rows.
@@ -141,7 +148,7 @@ export default async function handler(req, res) {
       live: toNumber(row[headerIndex.live]),
       delay: toNumber(row[headerIndex.delay]),
       status: row[headerIndex.status] || 'Normal',
-      route: row[headerIndex.route] || '',
+      route: normalizeRouteLabel(row[headerIndex.route]),
       recommended: /^(yes|true|1)$/i.test(String(row[headerIndex.recommended] || '').trim()),
       notes: row[headerIndex.notes] || '',
       polyline: row[headerIndex.polyline] || ''
