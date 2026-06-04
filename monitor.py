@@ -47,13 +47,6 @@ class LatLng:
             "location": {"latLng": {"latitude": self.lat, "longitude": self.lng}},
         }
 
-    def to_waypoint(self) -> dict[str, object]:
-        """Routes API pass-through (non-stopover) intermediate waypoint."""
-        return {
-            "via": True,
-            **self.to_payload(),
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class Place:
@@ -91,82 +84,48 @@ ROUTES: Final[Sequence[Route]] = (
 
 @dataclass(frozen=True, slots=True)
 class Corridor:
-    """A named highway option, pinned to a pass-through point on that road.
+    """A named highway option identified by the road it actually drives.
 
-    Google only volunteers routes it judges competitive, so we force the
-    monitored shuttle path with ``via`` waypoints that sit on the required roads.
-    Shortcuts can still appear at the corridor edges, so configured blocked road
-    names are rejected before a sample is logged.
+    Rather than forcing the path with ``via`` waypoints (which snap onto side
+    streets and make Google U-turn back to them, producing hairpin detours and
+    neighbourhood shortcuts), we ask Google for its natural alternatives and
+    match each returned route to a corridor by the signature road it travels.
+
+    ``signature_roads`` are matched against Google's route description first (the
+    cleanest signal) and then the turn-by-turn text. The most specific corridor
+    must be listed first: SC-61 routes also touch US-17 near downtown, so Route
+    61 is checked before Route 17, whose ``Savannah Hwy``/``US-17`` signatures
+    would otherwise also match it.
     """
 
     label: str
-    via_points: Sequence[LatLng]
-    blocked_road_names: Sequence[str] = ()
+    signature_roads: Sequence[str]
 
-    def to_waypoints(self) -> list[dict[str, object]]:
-        """Routes API pass-through waypoint list."""
-        return [point.to_waypoint() for point in self.via_points]
+    def matches(self, description: str, route_text: str) -> bool:
+        """True if this corridor's road appears in the route description/text."""
+        return any(road.lower() in description for road in self.signature_roads) or any(
+            road.lower() in route_text for road in self.signature_roads
+        )
 
 
-# Via points are direction-specific locks from the Google Maps route examples.
-# Each direction records both monitored corridors: Route 17/Savannah Hwy and
-# Route 61/St Andrews Blvd. The blocked-road guard rejects the James Island
-# Expressway/Meaders shortcut if Google leaks it into the returned directions.
-BLOCKED_CORRIDOR_ROADS: Final[Sequence[str]] = (
-    "James Island Expressway",
-    "James Island Expy",
-    "SC 30",
-    "SC-30",
-    "State Hwy 30",
-    "Meaders",
-    "Meader",
+# Monitored corridors, most-specific first. The same two corridors apply to both
+# travel directions; the highway names are direction-agnostic.
+MONITORED_CORRIDORS: Final[Sequence[Corridor]] = (
+    Corridor(
+        label="Route 61",
+        # SC-61 / St Andrews Blvd / Ashley River Rd — exclusive to this corridor.
+        signature_roads=("SC-61", "SC 61", "St Andrews", "Ashley River Rd"),
+    ),
+    Corridor(
+        label="Route 17",
+        # US-17 / Savannah Hwy — the direct highway across the Ashley River Bridge.
+        signature_roads=("Savannah Hwy", "US-17", "US 17"),
+    ),
 )
 
 ROUTE_CORRIDORS: Final[Mapping[Route, Sequence[Corridor]]] = {
-    ROUTES[0]: (
-        Corridor(
-            label="Route 17",
-            via_points=(
-                # US-17/Savannah Hwy west of the Ashley River Bridge.
-                LatLng(32.786912, -79.972322),
-                # Spring St / Cannon St off-ramp after the Ashley River Bridge.
-                LatLng(32.788550, -79.954714),
-            ),
-            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
-        ),
-        Corridor(
-            label="Route 61",
-            via_points=(
-                # SC-61 near St Andrews Blvd.
-                LatLng(32.800531, -79.985934),
-                # Spring St / Cannon St off-ramp after the Ashley River Bridge.
-                LatLng(32.788550, -79.954714),
-            ),
-            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
-        ),
-    ),
-    ROUTES[1]: (
-        Corridor(
-            label="Route 17",
-            via_points=(
-                # US-17 S / Savannah Hwy just past the bridge.
-                LatLng(32.786912, -79.972322),
-                # US-17/Savannah Hwy west of the Ashley River Bridge.
-                LatLng(32.78647, -80.01123),
-            ),
-            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
-        ),
-        Corridor(
-            label="Route 61",
-            via_points=(
-                # US-17 S / Savannah Hwy just past the bridge.
-                LatLng(32.786912, -79.972322),
-                # SC-61 N / St Andrews Blvd branch back northwest.
-                LatLng(32.802114, -79.988220),
-            ),
-            blocked_road_names=BLOCKED_CORRIDOR_ROADS,
-        ),
-    ),
+    ROUTES[0]: MONITORED_CORRIDORS,
+    ROUTES[1]: MONITORED_CORRIDORS,
 }
 
 # EXPECTED DATABASE SCHEMA DEFINITION
@@ -200,7 +159,7 @@ WORKSHEET_NAME: Final[str] = os.getenv("WORKSHEET_NAME", "Log")
 ROUTES_API_URL: Final[str] = "https://routes.googleapis.com/directions/v2:computeRoutes"
 REQUEST_TIMEOUT: Final[tuple[float, float]] = (5.0, 15.0)  # (connect, read) seconds
 DEPARTURE_BUFFER_SEC: Final[int] = 60  # keep departureTime just ahead of "now"
-MAX_WORKERS: Final[int] = min(8, sum(len(corridors) for corridors in ROUTE_CORRIDORS.values())) or 1
+MAX_WORKERS: Final[int] = min(8, len(ROUTES)) or 1
 METERS_TO_MILES: Final[float] = 0.000621371
 
 # Delay thresholds (minutes) used to classify congestion.
@@ -390,27 +349,40 @@ def _route_text(route_data: dict[str, Any]) -> str:
     return " ".join(text).lower()
 
 
-def _uses_blocked_road(route_data: dict[str, Any], corridor: Corridor) -> str | None:
-    """Return the blocked road name found in the API route, if any."""
+def classify_route(
+    route_data: dict[str, Any], corridors: Sequence[Corridor]
+) -> Corridor | None:
+    """Match a returned route to a monitored corridor by the road it drives.
+
+    Corridors are tested in order, so the most-specific corridor must be listed
+    first. The description is the cleanest signal, so a description match wins
+    over a turn-by-turn text match; ``Corridor.matches`` checks both.
+    """
+    description = (route_data.get("description") or "").lower()
     route_text = _route_text(route_data)
-    for road_name in corridor.blocked_road_names:
-        if road_name.lower() in route_text:
-            return road_name
+    for corridor in corridors:
+        if corridor.matches(description, route_text):
+            return corridor
     return None
 
 
-def fetch_corridor(
+def fetch_direction(
     session: requests.Session,
     route: Route,
-    corridor: Corridor,
+    corridors: Sequence[Corridor],
     api_key: str,
     departure_time: str,
-) -> RouteMetrics:
-    """Query the Routes API for one direction forced onto the allowed corridor.
+) -> dict[str, RouteMetrics]:
+    """Fetch Google's natural alternatives for one direction, grouped by corridor.
 
     Uses ``TRAFFIC_AWARE_OPTIMAL`` with an explicit ``departureTime`` of *now* so
     Google returns the same high-precision, live-traffic estimate the Google Maps
-    app shows, and ``via`` waypoints to pin the route to the required roads.
+    app shows. ``computeAlternativeRoutes`` lets Google volunteer the genuine
+    Savannah Hwy / SC-61 options; each is then matched to a monitored corridor
+    and the fastest representative per corridor is kept.
+
+    Returns a mapping of corridor label -> metrics for the corridors that were
+    matched in the returned alternatives.
     """
     headers = {
         "Content-Type": "application/json",
@@ -430,11 +402,10 @@ def fetch_corridor(
     payload = {
         "origin": LOCATIONS[route.origin].to_payload(),
         "destination": LOCATIONS[route.destination].to_payload(),
-        "intermediates": corridor.to_waypoints(),
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
         "departureTime": departure_time,
-        "computeAlternativeRoutes": False,
+        "computeAlternativeRoutes": True,
         "units": "IMPERIAL",
     }
 
@@ -446,20 +417,29 @@ def fetch_corridor(
 
     if "routes" not in data or not data["routes"]:
         raise ValueError(
-            f"No viable {corridor.label} path between {route.origin} and {route.destination}"
+            f"No route between {route.origin} and {route.destination}"
         )
 
-    route_data = data["routes"][0]
-    blocked_road = _uses_blocked_road(route_data, corridor)
-    if blocked_road:
+    best: dict[str, RouteMetrics] = {}
+    for route_data in data["routes"]:
+        corridor = classify_route(route_data, corridors)
+        if corridor is None:
+            # An alternative that doesn't travel a monitored corridor (e.g. a far
+            # James Island bypass) is simply ignored — it is never logged.
+            continue
+        metrics = _parse_route(route, route_data)
+        # Label the row by our matched corridor rather than Google's description.
+        metrics["route_summary"] = corridor.label
+        existing = best.get(corridor.label)
+        if existing is None or metrics["traffic_min"] < existing["traffic_min"]:
+            best[corridor.label] = metrics
+
+    if not best:
         raise ValueError(
-            f"{corridor.label} path used blocked shortcut road: {blocked_road}"
+            f"No monitored corridor matched any route between "
+            f"{route.origin} and {route.destination}"
         )
-
-    metrics = _parse_route(route, route_data)
-    # Label the row by our forced corridor rather than Google's noisy description.
-    metrics["route_summary"] = corridor.label
-    return metrics
+    return best
 
 
 def build_sample(
@@ -495,23 +475,18 @@ def collect_samples(api_key: str, departure_time: str) -> list[TrafficSample]:
 
     with build_session() as session, ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
-            pool.submit(fetch_corridor, session, route, corridor, api_key, departure_time): (
-                route,
-                corridor,
-            )
+            pool.submit(fetch_direction, session, route, corridors, api_key, departure_time): route
             for route, corridors in ROUTE_CORRIDORS.items()
-            for corridor in corridors
         }
         for future in as_completed(futures):
-            route, corridor = futures[future]
+            route = futures[future]
             try:
-                metrics_by_route[route].append(future.result())
-            except Exception as exc:  # noqa: BLE001 - isolate one corridor from the rest.
+                metrics_by_route[route] = list(future.result().values())
+            except Exception as exc:  # noqa: BLE001 - isolate one direction from the rest.
                 logger.error(
-                    "Failed to fetch %s -> %s via %s: %s",
+                    "Failed to fetch %s -> %s: %s",
                     route.origin,
                     route.destination,
-                    corridor.label,
                     exc,
                 )
 
