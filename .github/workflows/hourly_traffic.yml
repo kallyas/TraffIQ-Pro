@@ -26,4 +26,5 @@ jobs:
     - name: Run Traffic Script
       env:
         GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+        SPREADSHEET_NAME: ${{ secrets.SPREADSHEET_NAME }}
       run: python monitor.py
