@@ -101,12 +101,12 @@ export default function App() {
         <KpiGrid kpis={kpis} />
 
         <Grid container spacing={3}>
-          <Grid item xs={12} lg={7}>
+          <Grid item xs={12} lg={7} sx={{ minWidth: 0 }}>
             <Suspense fallback={<PanelSkeleton />}>
               <TimeSeriesCard records={recommendedRecords} />
             </Suspense>
           </Grid>
-          <Grid item xs={12} lg={5}>
+          <Grid item xs={12} lg={5} sx={{ minWidth: 0 }}>
             <Suspense fallback={<PanelSkeleton height={440} />}>
               <RouteMapCard records={filteredRecords} />
             </Suspense>
