@@ -16,7 +16,6 @@ import { colors } from '../theme.js';
 import { formatDateTime } from '../utils/format.js';
 
 const parkChsNavLinks = [
-  { label: 'Home', href: 'https://parkchs.com/' },
   {
     label: 'Annual Member Parking Reservation',
     href: 'https://parkchs.com/annual-member/'
