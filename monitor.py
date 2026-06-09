@@ -33,6 +33,28 @@ load_dotenv()
 
 logger = logging.getLogger("traffiq")
 
+
+def log_exception_context(exc: BaseException) -> None:
+    """Log exception details that are useful in CI without exposing secrets."""
+    logger.error("Exception type: %s.%s", exc.__class__.__module__, exc.__class__.__name__)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        logger.error("Google API response status: %s", getattr(response, "status_code", "unknown"))
+        logger.error("Google API response reason: %s", getattr(response, "reason", "unknown"))
+        text = getattr(response, "text", "")
+        if text:
+            logger.error("Google API response body: %s", text[:2000])
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        logger.error("Caused by: %s.%s: %s", cause.__class__.__module__, cause.__class__.__name__, cause)
+        cause_response = getattr(cause, "response", None)
+        if cause_response is not None:
+            logger.error("Cause response status: %s", getattr(cause_response, "status_code", "unknown"))
+            logger.error("Cause response reason: %s", getattr(cause_response, "reason", "unknown"))
+            cause_text = getattr(cause_response, "text", "")
+            if cause_text:
+                logger.error("Cause response body: %s", cause_text[:2000])
+
 # --- TYPE DEFINITIONS FOR GEO ---
 @dataclass(frozen=True, slots=True)
 class LatLng:
@@ -252,17 +274,25 @@ def build_session() -> requests.Session:
 # --- AUTHENTICATION & INITIALIZATION ---
 def get_google_sheet() -> gspread.Worksheet:
     """Authorize against Google and return the target worksheet."""
+    logger.info("Using Google Sheets credentials file: %s", GOOGLE_SHEETS_KEY_FILE)
     creds = Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
         GOOGLE_SHEETS_KEY_FILE, scopes=list(SHEETS_SCOPES)
     )
+    logger.info("Google service account email: %s", creds.service_account_email)
+    logger.info("Opening spreadsheet %r and worksheet %r", SPREADSHEET_NAME, WORKSHEET_NAME)
     client = gspread.authorize(creds)
-    return client.open(SPREADSHEET_NAME).worksheet(WORKSHEET_NAME)
+    spreadsheet = client.open(SPREADSHEET_NAME)
+    logger.info("Opened spreadsheet id=%s title=%r", spreadsheet.id, spreadsheet.title)
+    worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
+    logger.info("Opened worksheet id=%s title=%r", worksheet.id, worksheet.title)
+    return worksheet
 
 
 def ensure_database_schema(sheet: gspread.Worksheet) -> None:
     """Programmatically validates row 1 schema, adding headers if absent."""
     try:
         first_row = sheet.row_values(1)
+        logger.info("Worksheet row 1 has %d column(s); expected %d.", len(first_row), len(EXPECTED_HEADERS))
         if not first_row or [str(h).strip().lower() for h in first_row] != [str(e).lower() for e in EXPECTED_HEADERS]:
             logger.info("Database headers missing or mismatched. Re-initializing schema columns...")
             
@@ -275,6 +305,7 @@ def ensure_database_schema(sheet: gspread.Worksheet) -> None:
                 
             logger.info("Database schema columns successfully verified.")
     except Exception as e:
+        log_exception_context(e)
         raise RuntimeError(f"Failed schema execution validation: {e}") from e
 
 
@@ -536,7 +567,8 @@ def main() -> int:
         # Ensure our database table matches expected structures before mining data
         ensure_database_schema(sheet)
     except Exception as exc:
-        logger.error("Database connection or schema validation aborted: %s", exc)
+        logger.exception("Database connection or schema validation aborted.")
+        log_exception_context(exc)
         return 1
 
     # Stamp departure as the immediate future in RFC-3339 UTC so the Routes API
