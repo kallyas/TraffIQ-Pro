@@ -112,7 +112,7 @@ export default async function handler(req, res) {
     });
 
     const sheets = google.sheets({ version: 'v4', auth });
-    const range = `${worksheetName}!A1:Q`;
+    const range = `'${worksheetName}'!A1:Q`;
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range
